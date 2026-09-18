@@ -7,13 +7,17 @@ export async function exportToExcel() {
     return;
   }
 
-  const { meisters, interactions } = await fetchAllForExport();
+  const { meisters, interactions, guests } = await fetchAllForExport();
 
   const meisterRows = meisters.map((m) => ({
     Name: m.name,
     Phone: m.phone || "",
     Email: m.email || "",
     Dealership: m.dealership || "",
+    "Dealership Website": m.dealership_website || "",
+    City: m.city || "",
+    State: m.state || "",
+    Zip: m.zip || "",
     Status: m.status,
     "Profile Summary": m.profile_summary || "",
     "Created By": m.created_by_name || "",
@@ -30,15 +34,27 @@ export async function exportToExcel() {
     "Date/Time": formatDate(i.created_at),
   }));
 
+  const guestRows = guests.map((g) => ({
+    Meister: g.meisters ? g.meisters.name : "",
+    "Guest Name": g.guest_name,
+    "Vehicle Purchased": g.vehicle_purchased || "",
+    "Purchase Date": g.purchase_date || "",
+    Notes: g.notes || "",
+    "Logged By": g.created_by_name || "",
+  }));
+
   const wb = XLSX.utils.book_new();
   const wsMeisters = XLSX.utils.json_to_sheet(meisterRows);
   const wsInteractions = XLSX.utils.json_to_sheet(interactionRows);
+  const wsGuests = XLSX.utils.json_to_sheet(guestRows);
 
   autoWidth(wsMeisters, meisterRows);
   autoWidth(wsInteractions, interactionRows);
+  autoWidth(wsGuests, guestRows);
 
   XLSX.utils.book_append_sheet(wb, wsMeisters, "Meisters");
   XLSX.utils.book_append_sheet(wb, wsInteractions, "Interactions");
+  XLSX.utils.book_append_sheet(wb, wsGuests, "Guests");
 
   const stamp = new Date().toISOString().slice(0, 10);
   XLSX.writeFile(wb, `GR-GT-CRM-Export-${stamp}.xlsx`);

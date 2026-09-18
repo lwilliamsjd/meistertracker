@@ -8,8 +8,10 @@ A lightweight, private CRM for tracking Meister conversations (phone, text, emai
 - Click a Meister to open their page: profile fields + a running log of conversations
 - Every conversation note is tagged with method (Phone, Text, Email, In Person, Other), who logged it, and when
 - Activity Log page shows everything your team has entered, newest first
+- Quick Call/Text/Email/Note buttons on a Meister's Profile tab jump straight to logging that kind of conversation (these only log internally — nothing dials, texts, or sends an email)
+- Guests tab per Meister tracks who they've referred or sold a vehicle to, with vehicle and purchase date
 - Live sync — when a teammate adds or edits something, your screen updates without refreshing
-- Export to Excel button pulls everything into a two-tab .xlsx (Meisters, Interactions)
+- Export to Excel button pulls everything into a three-tab .xlsx (Meisters, Interactions, Guests)
 - Browser back/forward buttons work normally between pages
 
 ## One-time setup
@@ -20,17 +22,38 @@ Go to supabase.com, create a free project, and wait for it to finish provisionin
 ### 2. Run the database schema
 In your Supabase project: **SQL Editor → New Query**, paste in everything from `sql/schema.sql`, and run it. This creates the tables, security rules, and the profile that gets created automatically whenever you add a team member.
 
-### 3. Turn on live sync
-Easiest way — run this in the SQL Editor (works regardless of which Supabase UI version you're on):
+**Already ran this before and just pulled the latest files?** Your `meisters` table is missing the new address/website columns and the `guests` table doesn't exist yet. Run this once instead of the whole file:
 
 ```sql
-alter publication supabase_realtime add table meisters;
-alter publication supabase_realtime add table interactions;
+alter table meisters add column if not exists dealership_website text;
+alter table meisters add column if not exists city text;
+alter table meisters add column if not exists state text;
+alter table meisters add column if not exists zip text;
+
+create table if not exists guests (
+  id uuid primary key default gen_random_uuid(),
+  meister_id uuid not null references meisters(id) on delete cascade,
+  guest_name text not null,
+  vehicle_purchased text,
+  purchase_date date,
+  notes text,
+  created_by uuid references auth.users(id),
+  created_by_name text,
+  created_at timestamptz not null default now()
+);
+
+alter table guests enable row level security;
+
+drop policy if exists "guests_all_authenticated" on guests;
+create policy "guests_all_authenticated" on guests for all
+  using (auth.role() = 'authenticated')
+  with check (auth.role() = 'authenticated');
+
+alter publication supabase_realtime add table guests;
 ```
 
-If it errors saying they're already in the publication, it's already on.
-
-If you'd rather click through the UI instead, look for **Database → Publications** (some versions call it "Replication") — open `supabase_realtime` and toggle on `meisters` and `interactions`.
+### 3. Turn on live sync
+**Database → Replication → supabase_realtime** and toggle ON for the `meisters` and `interactions` tables.
 
 ### 4. Add your team as logins
 **Authentication → Users → Add User** for yourself and each team member. Use their real email and a temporary password, and have them change it after first login (Supabase doesn't have a built-in "change password" screen — the simplest path is you set a password for them and share it directly, or enable email invites in Authentication settings if you'd rather they set their own).

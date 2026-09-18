@@ -12,6 +12,9 @@ import {
   listInteractions,
   addInteraction,
   deleteInteraction,
+  listGuests,
+  addGuest,
+  deleteGuest,
   listRecentActivity,
   subscribeToChanges,
 } from "./api.js";
@@ -20,6 +23,16 @@ import { exportToExcel } from "./export.js";
 const app = document.getElementById("app");
 let currentProfile = null;
 let unsubscribeRealtime = null;
+
+const QUICK_ACTIONS = [
+  { label: "Call", icon: "\u{1F4DE}", method: "Phone" },
+  { label: "Text", icon: "\u{1F4AC}", method: "Text" },
+  { label: "Email", icon: "✉️", method: "Email" },
+  { label: "Note", icon: "\u{1F4DD}", method: "Other" },
+];
+
+// per-meister-view UI state (reset each time renderMeister runs for a new id)
+let uiState = { activeTab: "profile", composerOpen: false, composerMethod: "Phone", methodFilter: "", guestFormOpen: false };
 
 // ============================================================
 // ROUTER  (hash-based — works with GitHub Pages + browser back/forward)
@@ -51,8 +64,6 @@ async function init() {
 function startRealtime() {
   if (unsubscribeRealtime) unsubscribeRealtime();
   unsubscribeRealtime = subscribeToChanges(() => {
-    // Only re-render list/detail-style views live; don't yank someone
-    // out of a form they're typing in.
     const route = parseHash();
     if (route.name === "dashboard" || route.name === "activity") render();
     if (route.name === "meister" && route.mode === "view") render();
@@ -82,6 +93,8 @@ function parseHash() {
 // ============================================================
 // RENDER
 // ============================================================
+let lastMeisterId = null;
+
 async function render() {
   const session = await getSession();
   const route = parseHash();
@@ -98,7 +111,14 @@ async function render() {
   if (route.name === "login") return renderLogin();
   if (route.name === "dashboard") return renderShell(renderDashboard);
   if (route.name === "activity") return renderShell(renderActivity);
-  if (route.name === "meister") return renderShell(() => renderMeister(route));
+  if (route.name === "meister") {
+    const id = route.mode === "new" ? "new" : route.id;
+    if (id !== lastMeisterId) {
+      uiState = { activeTab: "profile", composerOpen: false, composerMethod: "Phone", methodFilter: "", guestFormOpen: false };
+      lastMeisterId = id;
+    }
+    return renderShell(() => renderMeister(route));
+  }
 }
 
 function renderShell(contentFn) {
@@ -310,11 +330,16 @@ async function renderMeister(route) {
   const isNew = route.mode === "new";
   let meister = null;
   let interactions = [];
+  let guests = [];
 
   if (!isNew) {
     container.innerHTML = `<div class="loading">Loading meister…</div>`;
     try {
-      [meister, interactions] = await Promise.all([getMeister(route.id), listInteractions(route.id)]);
+      [meister, interactions, guests] = await Promise.all([
+        getMeister(route.id),
+        listInteractions(route.id),
+        listGuests(route.id),
+      ]);
     } catch (err) {
       container.innerHTML = `<div class="empty-state">Could not load this meister. They may have been removed.</div>`;
       return;
@@ -331,11 +356,13 @@ async function renderMeister(route) {
     </div>
 
     <div class="tabs" id="tabs">
-      <button class="tab-btn active" data-tab="profile">Profile</button>
-      ${!isNew ? `<button class="tab-btn" data-tab="notes">Conversations (${interactions.length})</button>` : ""}
+      <button class="tab-btn ${uiState.activeTab === "profile" ? "active" : ""}" data-tab="profile">Profile</button>
+      ${!isNew ? `<button class="tab-btn ${uiState.activeTab === "activity" ? "active" : ""}" data-tab="activity">Activity (${interactions.length})</button>` : ""}
+      ${!isNew ? `<button class="tab-btn ${uiState.activeTab === "guests" ? "active" : ""}" data-tab="guests">Guests (${guests.length})</button>` : ""}
     </div>
 
-    <div id="tab-profile" class="tab-panel">
+    <div id="tab-profile" class="tab-panel" style="${uiState.activeTab === "profile" ? "" : "display:none"}">
+      ${!isNew ? renderQuickActions() : ""}
       <form id="profile-form" class="form-card">
         <div class="form-grid">
           <div class="form-field">
@@ -343,8 +370,12 @@ async function renderMeister(route) {
             <input id="f-name" required value="${escapeAttr(meister?.name)}" />
           </div>
           <div class="form-field">
-            <label>Dealership</label>
-            <input id="f-dealership" value="${escapeAttr(meister?.dealership)}" />
+            <label>Status</label>
+            <select id="f-status">
+              ${["New", "Contacted", "Engaged", "Sold", "Not Interested"]
+                .map((s) => `<option ${meister?.status === s ? "selected" : ""}>${s}</option>`)
+                .join("")}
+            </select>
           </div>
           <div class="form-field">
             <label>Phone</label>
@@ -355,12 +386,26 @@ async function renderMeister(route) {
             <input id="f-email" type="email" value="${escapeAttr(meister?.email)}" />
           </div>
           <div class="form-field">
-            <label>Status</label>
-            <select id="f-status">
-              ${["New", "Contacted", "Engaged", "Sold", "Not Interested"]
-                .map((s) => `<option ${meister?.status === s ? "selected" : ""}>${s}</option>`)
-                .join("")}
-            </select>
+            <label>Dealership</label>
+            <input id="f-dealership" value="${escapeAttr(meister?.dealership)}" />
+          </div>
+          <div class="form-field">
+            <label>Dealership Website</label>
+            <input id="f-dealership-website" placeholder="https://…" value="${escapeAttr(meister?.dealership_website)}" />
+          </div>
+          <div class="form-field">
+            <label>City</label>
+            <input id="f-city" value="${escapeAttr(meister?.city)}" />
+          </div>
+          <div class="form-field form-field-split">
+            <div>
+              <label>State</label>
+              <input id="f-state" value="${escapeAttr(meister?.state)}" />
+            </div>
+            <div>
+              <label>Zip</label>
+              <input id="f-zip" value="${escapeAttr(meister?.zip)}" />
+            </div>
           </div>
         </div>
         <div class="form-field">
@@ -378,7 +423,8 @@ async function renderMeister(route) {
       </form>
     </div>
 
-    ${!isNew ? renderNotesTab(interactions) : ""}
+    ${!isNew ? renderActivityTab(interactions) : ""}
+    ${!isNew ? renderGuestsTab(guests) : ""}
   `;
 
   wireTabs();
@@ -388,6 +434,10 @@ async function renderMeister(route) {
     const fields = {
       name: document.getElementById("f-name").value.trim(),
       dealership: document.getElementById("f-dealership").value.trim(),
+      dealership_website: document.getElementById("f-dealership-website").value.trim(),
+      city: document.getElementById("f-city").value.trim(),
+      state: document.getElementById("f-state").value.trim(),
+      zip: document.getElementById("f-zip").value.trim(),
       phone: document.getElementById("f-phone").value.trim(),
       email: document.getElementById("f-email").value.trim(),
       status: document.getElementById("f-status").value,
@@ -412,67 +462,81 @@ async function renderMeister(route) {
 
   if (!isNew) {
     document.getElementById("delete-btn").addEventListener("click", async () => {
-      if (!confirm(`Delete ${meister.name}? This also deletes all their logged conversations.`)) return;
+      if (!confirm(`Delete ${meister.name}? This also deletes all their logged conversations and guests.`)) return;
       await deleteMeister(meister.id);
       navigate("#/dashboard");
     });
 
-    const addForm = document.getElementById("interaction-form");
-    if (addForm) {
-      addForm.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const method = document.getElementById("i-method").value;
-        const note = document.getElementById("i-note").value.trim();
-        if (!note) return;
-        const btn = addForm.querySelector("button[type=submit]");
-        btn.disabled = true;
-        try {
-          await addInteraction(meister.id, method, note, currentProfile.full_name, currentProfile.id);
-          renderMeister(route);
-        } catch (err) {
-          alert("Could not save note: " + err.message);
-          btn.disabled = false;
-        }
-      });
-    }
-
-    container.querySelectorAll(".delete-note-btn").forEach((btn) => {
-      btn.addEventListener("click", async () => {
-        if (!confirm("Delete this note?")) return;
-        await deleteInteraction(btn.dataset.id);
-        renderMeister(route);
-      });
-    });
+    wireQuickActions();
+    wireActivityTab(route, meister);
+    wireGuestsTab(route, meister);
   }
 }
 
-function renderNotesTab(interactions) {
+// ---------- quick actions (Profile tab) ----------
+function renderQuickActions() {
   return `
-    <div id="tab-notes" class="tab-panel" style="display:none">
-      <form id="interaction-form" class="form-card">
-        <div class="form-grid form-grid-tight">
-          <div class="form-field">
-            <label>Method</label>
-            <select id="i-method">
-              <option>Phone</option>
-              <option>Text</option>
-              <option>Email</option>
-              <option>In Person</option>
-              <option>Other</option>
-            </select>
-          </div>
+    <div class="quick-actions">
+      ${QUICK_ACTIONS.map(
+        (a) => `<button type="button" class="qa-btn" data-method="${a.method}"><span class="qa-icon">${a.icon}</span>${a.label}</button>`
+      ).join("")}
+    </div>
+    <p class="muted" style="margin:-6px 0 18px">These just log the conversation here — they don't place a call, send a text, or send an email.</p>
+  `;
+}
+
+function wireQuickActions() {
+  document.querySelectorAll(".qa-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      uiState.activeTab = "activity";
+      uiState.composerOpen = true;
+      uiState.composerMethod = btn.dataset.method;
+      render();
+    });
+  });
+}
+
+// ---------- activity tab ----------
+const METHODS = ["Phone", "Text", "Email", "In Person", "Other"];
+
+function renderActivityTab(interactions) {
+  const filtered = uiState.methodFilter ? interactions.filter((i) => i.method === uiState.methodFilter) : interactions;
+
+  return `
+    <div id="tab-activity" class="tab-panel" style="${uiState.activeTab === "activity" ? "" : "display:none"}">
+      <div class="toolbar">
+        <div class="filter-chips" id="method-chips">
+          <button type="button" class="chip ${!uiState.methodFilter ? "active" : ""}" data-method="">All (${interactions.length})</button>
+          ${METHODS.map((m) => {
+            const count = interactions.filter((i) => i.method === m).length;
+            return `<button type="button" class="chip ${uiState.methodFilter === m ? "active" : ""}" data-method="${m}">${m} (${count})</button>`;
+          }).join("")}
         </div>
-        <div class="form-field">
-          <label>Note</label>
-          <textarea id="i-note" rows="3" required placeholder="What did you talk about? Any follow-up needed?"></textarea>
+        <button type="button" id="toggle-composer-btn" class="btn btn-primary">${uiState.composerOpen ? "Cancel" : "+ Log Activity"}</button>
+      </div>
+
+      ${
+        uiState.composerOpen
+          ? `
+      <form id="interaction-form" class="composer">
+        <div class="composer-top">
+          <select id="i-method">
+            ${METHODS.map((m) => `<option ${uiState.composerMethod === m ? "selected" : ""}>${m}</option>`).join("")}
+          </select>
         </div>
-        <button type="submit" class="btn btn-primary">Log Conversation</button>
-      </form>
+        <textarea id="i-note" rows="3" required placeholder="What did you talk about? Any follow-up needed?"></textarea>
+        <div class="composer-actions">
+          <button type="button" id="cancel-composer-btn" class="btn">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>`
+          : ""
+      }
 
       <div class="notes-list">
         ${
-          interactions.length
-            ? interactions
+          filtered.length
+            ? filtered
                 .map(
                   (i) => `
           <div class="note-card">
@@ -492,15 +556,179 @@ function renderNotesTab(interactions) {
   `;
 }
 
+function wireActivityTab(route, meister) {
+  const chipsEl = document.getElementById("method-chips");
+  if (chipsEl) {
+    chipsEl.querySelectorAll(".chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        uiState.methodFilter = chip.dataset.method;
+        render();
+      });
+    });
+  }
+
+  const toggleBtn = document.getElementById("toggle-composer-btn");
+  if (toggleBtn) {
+    toggleBtn.addEventListener("click", () => {
+      uiState.composerOpen = !uiState.composerOpen;
+      render();
+    });
+  }
+  const cancelBtn = document.getElementById("cancel-composer-btn");
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", () => {
+      uiState.composerOpen = false;
+      render();
+    });
+  }
+
+  const addForm = document.getElementById("interaction-form");
+  if (addForm) {
+    addForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const method = document.getElementById("i-method").value;
+      const note = document.getElementById("i-note").value.trim();
+      if (!note) return;
+      const btn = addForm.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        await addInteraction(meister.id, method, note, currentProfile.full_name, currentProfile.id);
+        uiState.composerOpen = false;
+        render();
+      } catch (err) {
+        alert("Could not save note: " + err.message);
+        btn.disabled = false;
+      }
+    });
+  }
+
+  document.querySelectorAll(".delete-note-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("Delete this note?")) return;
+      await deleteInteraction(btn.dataset.id);
+      render();
+    });
+  });
+}
+
+// ---------- guests tab ----------
+function renderGuestsTab(guests) {
+  return `
+    <div id="tab-guests" class="tab-panel" style="${uiState.activeTab === "guests" ? "" : "display:none"}">
+      <div class="table-wrap" style="margin-bottom:16px">
+        <table class="crm-table">
+          <thead>
+            <tr><th>Guest Name</th><th>Vehicle Purchased</th><th>Purchase Date</th><th>Notes</th><th></th></tr>
+          </thead>
+          <tbody>
+            ${
+              guests.length
+                ? guests
+                    .map(
+                      (g) => `
+              <tr>
+                <td class="cell-name">${escapeHtml(g.guest_name)}</td>
+                <td>${escapeHtml(g.vehicle_purchased || "—")}</td>
+                <td>${g.purchase_date ? new Date(g.purchase_date + "T00:00:00").toLocaleDateString() : "—"}</td>
+                <td>${escapeHtml(g.notes || "—")}</td>
+                <td><button class="delete-note-btn delete-guest-btn" data-id="${g.id}" title="Delete guest">&times;</button></td>
+              </tr>`
+                    )
+                    .join("")
+                : `<tr><td colspan="5"><div class="empty-state">No guests logged yet.</div></td></tr>`
+            }
+          </tbody>
+        </table>
+      </div>
+
+      ${
+        uiState.guestFormOpen
+          ? `
+      <form id="guest-form" class="form-card">
+        <div class="form-grid">
+          <div class="form-field">
+            <label>Guest Name *</label>
+            <input id="g-name" required />
+          </div>
+          <div class="form-field">
+            <label>Vehicle Purchased</label>
+            <input id="g-vehicle" placeholder="e.g. GR GT" />
+          </div>
+          <div class="form-field">
+            <label>Purchase Date</label>
+            <input id="g-date" type="date" />
+          </div>
+          <div class="form-field">
+            <label>Notes</label>
+            <input id="g-notes" />
+          </div>
+        </div>
+        <div class="composer-actions">
+          <button type="button" id="cancel-guest-btn" class="btn">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Guest</button>
+        </div>
+      </form>`
+          : `<div class="add-guest-btn" id="add-guest-btn">+ Add Guest</div>`
+      }
+    </div>
+  `;
+}
+
+function wireGuestsTab(route, meister) {
+  const addBtn = document.getElementById("add-guest-btn");
+  if (addBtn) {
+    addBtn.addEventListener("click", () => {
+      uiState.guestFormOpen = true;
+      render();
+    });
+  }
+  const cancelBtn = document.getElementById("cancel-guest-btn");
+  if (cancelBtn) {
+    cancelBtn.addEventListener("click", () => {
+      uiState.guestFormOpen = false;
+      render();
+    });
+  }
+  const guestForm = document.getElementById("guest-form");
+  if (guestForm) {
+    guestForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fields = {
+        guest_name: document.getElementById("g-name").value.trim(),
+        vehicle_purchased: document.getElementById("g-vehicle").value.trim(),
+        purchase_date: document.getElementById("g-date").value || null,
+        notes: document.getElementById("g-notes").value.trim(),
+      };
+      if (!fields.guest_name) return;
+      const btn = guestForm.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        await addGuest(meister.id, fields, currentProfile.full_name, currentProfile.id);
+        uiState.guestFormOpen = false;
+        render();
+      } catch (err) {
+        alert("Could not save guest: " + err.message);
+        btn.disabled = false;
+      }
+    });
+  }
+
+  document.querySelectorAll(".delete-guest-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("Delete this guest record?")) return;
+      await deleteGuest(btn.dataset.id);
+      render();
+    });
+  });
+}
+
 function wireTabs() {
   const tabsEl = document.getElementById("tabs");
   if (!tabsEl) return;
   tabsEl.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
-      tabsEl.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-      btn.classList.add("active");
-      document.querySelectorAll(".tab-panel").forEach((p) => (p.style.display = "none"));
-      document.getElementById(`tab-${btn.dataset.tab}`).style.display = "block";
+      uiState.activeTab = btn.dataset.tab;
+      render();
     });
   });
 }

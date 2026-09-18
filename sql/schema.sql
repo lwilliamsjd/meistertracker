@@ -43,6 +43,10 @@ create table if not exists meisters (
   phone text,
   email text,
   dealership text,
+  dealership_website text,
+  city text,
+  state text,
+  zip text,
   status text not null default 'New' check (status in ('New','Contacted','Engaged','Sold','Not Interested')),
   profile_summary text,
   created_by uuid references auth.users(id),
@@ -51,6 +55,13 @@ create table if not exists meisters (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- If you already ran an earlier version of this schema, run this once to add
+-- the new columns to an existing table instead of recreating it:
+-- alter table meisters add column if not exists dealership_website text;
+-- alter table meisters add column if not exists city text;
+-- alter table meisters add column if not exists state text;
+-- alter table meisters add column if not exists zip text;
 
 create index if not exists meisters_name_idx on meisters (name);
 create index if not exists meisters_dealership_idx on meisters (dealership);
@@ -87,6 +98,30 @@ create index if not exists interactions_meister_idx on interactions (meister_id)
 create index if not exists interactions_created_idx on interactions (created_at desc);
 
 -- ============================================================
+-- GUESTS  (people this Meister has referred/sold a vehicle to)
+-- ============================================================
+create table if not exists guests (
+  id uuid primary key default gen_random_uuid(),
+  meister_id uuid not null references meisters(id) on delete cascade,
+  guest_name text not null,
+  vehicle_purchased text,
+  purchase_date date,
+  notes text,
+  created_by uuid references auth.users(id),
+  created_by_name text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists guests_meister_idx on guests (meister_id);
+
+alter table guests enable row level security;
+
+drop policy if exists "guests_all_authenticated" on guests;
+create policy "guests_all_authenticated" on guests for all
+  using (auth.role() = 'authenticated')
+  with check (auth.role() = 'authenticated');
+
+-- ============================================================
 -- ROW LEVEL SECURITY
 -- Internal team tool: any signed-in team member can read/write everything.
 -- Access is controlled by who has a login (added by you in Supabase Auth),
@@ -111,8 +146,10 @@ create policy "interactions_all_authenticated" on interactions for all
 
 -- ============================================================
 -- REALTIME
--- After running this file, in Supabase go to:
--- Database -> Replication -> supabase_realtime -> toggle ON for
--- "meisters" and "interactions" so every team member's screen
--- updates live when someone else adds or edits something.
+-- Run this (or use the Database -> Publications UI) so every team
+-- member's screen updates live when someone else adds or edits
+-- something. Safe to re-run; errors if a table is already added.
 -- ============================================================
+alter publication supabase_realtime add table meisters;
+alter publication supabase_realtime add table interactions;
+alter publication supabase_realtime add table guests;

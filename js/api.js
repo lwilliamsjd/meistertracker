@@ -94,6 +94,32 @@ export async function deleteInteraction(id) {
   if (error) throw error;
 }
 
+// ---------- guests ----------
+export async function listGuests(meisterId) {
+  const { data, error } = await supabase
+    .from("guests")
+    .select("*")
+    .eq("meister_id", meisterId)
+    .order("purchase_date", { ascending: false, nullsFirst: false });
+  if (error) throw error;
+  return data;
+}
+
+export async function addGuest(meisterId, fields, authorName, authorId) {
+  const { data, error } = await supabase
+    .from("guests")
+    .insert([{ meister_id: meisterId, ...fields, created_by: authorId, created_by_name: authorName }])
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteGuest(id) {
+  const { error } = await supabase.from("guests").delete().eq("id", id);
+  if (error) throw error;
+}
+
 // ---------- activity feed (recent across everything) ----------
 export async function listRecentActivity(limit = 100) {
   const { data, error } = await supabase
@@ -111,17 +137,20 @@ export function subscribeToChanges(onChange) {
     .channel("crm-live")
     .on("postgres_changes", { event: "*", schema: "public", table: "meisters" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "interactions" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, onChange)
     .subscribe();
   return () => supabase.removeChannel(channel);
 }
 
 // ---------- export helper ----------
 export async function fetchAllForExport() {
-  const [meisters, interactions] = await Promise.all([
+  const [meisters, interactions, guests] = await Promise.all([
     supabase.from("meisters").select("*").order("name"),
     supabase.from("interactions").select("*, meisters(name)").order("created_at", { ascending: false }),
+    supabase.from("guests").select("*, meisters(name)").order("purchase_date", { ascending: false, nullsFirst: false }),
   ]);
   if (meisters.error) throw meisters.error;
   if (interactions.error) throw interactions.error;
-  return { meisters: meisters.data, interactions: interactions.data };
+  if (guests.error) throw guests.error;
+  return { meisters: meisters.data, interactions: interactions.data, guests: guests.data };
 }
