@@ -120,6 +120,21 @@ create trigger meisters_set_updated_at
   for each row execute procedure set_updated_at();
 
 -- ============================================================
+-- QUESTION CATEGORIES  (inbound question types, for client reporting)
+-- ============================================================
+create table if not exists question_categories (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  sort_order int not null default 100,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+insert into question_categories (name, sort_order) values
+  ('Allocation', 10), ('PMA', 20), ('Delivery', 30), ('Build Options', 40), ('Guest Engagement', 50), ('Events', 60)
+on conflict (name) do nothing;
+
+-- ============================================================
 -- INTERACTIONS  (conversation log per Meister)
 -- occurred_at = when the conversation happened (editable, can be backdated)
 -- created_at  = when it was logged (fixed)
@@ -129,6 +144,7 @@ create table if not exists interactions (
   meister_id uuid not null references meisters(id) on delete cascade,
   method text not null check (method in ('Phone','Text','Email','In Person','Other')),
   note text not null,
+  category_id uuid references question_categories(id) on delete set null, -- optional question type
   occurred_at timestamptz not null default now(),
   created_by uuid references auth.users(id),
   created_by_name text,
@@ -139,6 +155,19 @@ create table if not exists interactions (
 
 create index if not exists interactions_meister_idx on interactions (meister_id);
 create index if not exists interactions_occurred_idx on interactions (occurred_at desc);
+create index if not exists interactions_category_idx on interactions (category_id);
+
+-- Logged entries are locked, but the question type is reporting metadata:
+-- this lets any signed-in user fix ONLY that field.
+create or replace function public.set_interaction_category(p_id uuid, p_category_id uuid)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update public.interactions set category_id = p_category_id
+  where id = p_id and auth.role() = 'authenticated';
+$$;
 
 -- ============================================================
 -- GUESTS  (people this Meister has referred/sold a vehicle to)
@@ -289,6 +318,17 @@ alter table guests enable row level security;
 alter table follow_ups enable row level security;
 alter table interaction_comments enable row level security;
 alter table notifications enable row level security;
+alter table question_categories enable row level security;
+
+-- question categories: everyone reads; only admins manage
+drop policy if exists "categories_select" on question_categories;
+drop policy if exists "categories_admin_insert" on question_categories;
+drop policy if exists "categories_admin_update" on question_categories;
+drop policy if exists "categories_admin_delete" on question_categories;
+create policy "categories_select" on question_categories for select using (auth.role() = 'authenticated');
+create policy "categories_admin_insert" on question_categories for insert with check (public.is_admin());
+create policy "categories_admin_update" on question_categories for update using (public.is_admin()) with check (public.is_admin());
+create policy "categories_admin_delete" on question_categories for delete using (public.is_admin());
 
 -- profiles: everyone signed in can read the team list; edits go through set_display_name()
 drop policy if exists "profiles_read_all" on profiles;
@@ -360,6 +400,10 @@ create policy "notifications_delete_own" on notifications for delete using (user
 -- ============================================================
 do $$ begin
   alter publication supabase_realtime add table notifications;
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  alter publication supabase_realtime add table question_categories;
 exception when duplicate_object then null; end $$;
 
 do $$ begin

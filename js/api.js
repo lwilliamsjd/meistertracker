@@ -80,9 +80,26 @@ export async function markMeisterNotificationsRead(userId, meisterId) {
 }
 
 export async function listTeam() {
-  const { data, error } = await supabase.from("profiles").select("id, full_name").order("full_name");
+  const { data, error } = await supabase.from("profiles").select("id, full_name, concierge").order("full_name");
   if (error) throw error;
   return data;
+}
+
+// ---------- analytics (everything the dashboard needs) ----------
+export async function fetchAnalyticsData() {
+  const [ints, meisters, guests, fus, team, cats] = await Promise.all([
+    supabase
+      .from("interactions")
+      .select("id, meister_id, method, note, category_id, occurred_at, created_by, created_by_name, meisters(name, concierge, dealership, status)")
+      .order("occurred_at", { ascending: false }),
+    supabase.from("meisters").select("id, name, dealership, job_title, status, concierge, created_at, updated_at").order("name"),
+    supabase.from("guests").select("*, meisters(name, concierge)").order("purchase_date", { ascending: false, nullsFirst: false }),
+    supabase.from("follow_ups").select("*, meisters(name, concierge)").is("done_at", null).order("due_at", { ascending: true }),
+    supabase.from("profiles").select("id, full_name, concierge"),
+    supabase.from("question_categories").select("*").order("sort_order"),
+  ]);
+  for (const r of [ints, meisters, guests, fus, team, cats]) if (r.error) throw r.error;
+  return { interactions: ints.data, meisters: meisters.data, guests: guests.data, followUps: fus.data, team: team.data, categories: cats.data };
 }
 
 export async function setDisplayName(newName) {
@@ -273,6 +290,51 @@ export async function deleteMeister(id) {
   if (error) throw error;
 }
 
+// ---------- question categories ----------
+export async function listCategories() {
+  const { data, error } = await supabase.from("question_categories").select("*").order("sort_order").order("name");
+  if (error) throw error;
+  return data;
+}
+
+export async function addCategory(name) {
+  const { data, error } = await supabase.from("question_categories").insert([{ name }]).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateCategory(id, fields) {
+  const { data, error } = await supabase.from("question_categories").update(fields).eq("id", id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteCategory(id) {
+  const { error } = await supabase.from("question_categories").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function countCategoryUses(id) {
+  const { count, error } = await supabase.from("interactions").select("id", { count: "exact", head: true }).eq("category_id", id);
+  if (error) throw error;
+  return count || 0;
+}
+
+export async function setInteractionCategory(interactionId, categoryId) {
+  const { error } = await supabase.rpc("set_interaction_category", { p_id: interactionId, p_category_id: categoryId });
+  if (error) throw error;
+}
+
+// Everything needed for the Insights page in one go.
+export async function listInteractionsForInsights() {
+  const { data, error } = await supabase
+    .from("interactions")
+    .select("id, meister_id, method, note, category_id, occurred_at, created_by_name, meisters(name, concierge, dealership)")
+    .order("occurred_at", { ascending: false });
+  if (error) throw error;
+  return data;
+}
+
 // ---------- interactions ----------
 export async function listInteractions(meisterId) {
   const { data, error } = await supabase
@@ -284,10 +346,10 @@ export async function listInteractions(meisterId) {
   return data;
 }
 
-export async function addInteraction(meisterId, { method, note, occurred_at }, authorName, authorId) {
+export async function addInteraction(meisterId, { method, note, occurred_at, category_id = null }, authorName, authorId) {
   const { data, error } = await supabase
     .from("interactions")
-    .insert([{ meister_id: meisterId, method, note, occurred_at, created_by: authorId, created_by_name: authorName }])
+    .insert([{ meister_id: meisterId, method, note, occurred_at, category_id, created_by: authorId, created_by_name: authorName }])
     .select()
     .single();
   if (error) throw error;
@@ -352,19 +414,21 @@ export function subscribeToChanges(onChange) {
     .on("postgres_changes", { event: "*", schema: "public", table: "follow_ups" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "interaction_comments" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "question_categories" }, onChange)
     .subscribe();
   return () => supabase.removeChannel(channel);
 }
 
 // ---------- export helper ----------
 export async function fetchAllForExport() {
-  const [meisters, interactions, guests, followUps, comments] = await Promise.all([
+  const [meisters, interactions, guests, followUps, comments, categories] = await Promise.all([
     supabase.from("meisters").select("*").order("name"),
     supabase.from("interactions").select("*, meisters(name)").order("occurred_at", { ascending: false }),
     supabase.from("guests").select("*, meisters(name)").order("purchase_date", { ascending: false, nullsFirst: false }),
     supabase.from("follow_ups").select("*, meisters(name)").order("due_at", { ascending: true }),
     supabase.from("interaction_comments").select("*").order("created_at", { ascending: true }),
+    supabase.from("question_categories").select("*").order("sort_order"),
   ]);
-  for (const r of [meisters, interactions, guests, followUps, comments]) if (r.error) throw r.error;
-  return { meisters: meisters.data, interactions: interactions.data, guests: guests.data, followUps: followUps.data, comments: comments.data };
+  for (const r of [meisters, interactions, guests, followUps, comments, categories]) if (r.error) throw r.error;
+  return { meisters: meisters.data, interactions: interactions.data, guests: guests.data, followUps: followUps.data, comments: comments.data, categories: categories.data };
 }

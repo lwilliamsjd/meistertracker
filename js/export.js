@@ -8,12 +8,26 @@ export async function exportToExcel(userId) {
     throw new Error("Excel export library did not load. Check your internet connection and try again.");
   }
 
-  const [{ meisters, interactions, guests, followUps, comments }, rollups] = await Promise.all([
+  const [{ meisters, interactions, guests, followUps, comments, categories }, rollups] = await Promise.all([
     fetchAllForExport(),
     listMeisterRollups(userId),
   ]);
 
   const noteById = Object.fromEntries(interactions.map((i) => [i.id, i]));
+  const catName = Object.fromEntries(categories.map((c) => [c.id, c.name]));
+
+  // Question type summary for the client report
+  const catCounts = {};
+  let uncategorized = 0;
+  for (const i of interactions) {
+    if (i.category_id && catName[i.category_id]) catCounts[catName[i.category_id]] = (catCounts[catName[i.category_id]] || 0) + 1;
+    else uncategorized++;
+  }
+  const categorizedTotal = interactions.length - uncategorized;
+  const summaryRows = categories
+    .map((c) => ({ "Question Type": c.name, Count: catCounts[c.name] || 0, "% of Categorized": categorizedTotal ? Math.round(((catCounts[c.name] || 0) / categorizedTotal) * 1000) / 10 : 0, Status: c.active ? "Active" : "Retired" }))
+    .sort((a, b) => b.Count - a.Count);
+  summaryRows.push({ "Question Type": "(No type selected)", Count: uncategorized, "% of Categorized": "", Status: "" });
 
   const meisterRows = meisters.map((m) => {
     const r = rollups[m.id] || {};
@@ -43,6 +57,7 @@ export async function exportToExcel(userId) {
   const interactionRows = interactions.map((i) => ({
     Meister: i.meisters ? i.meisters.name : "",
     Method: i.method,
+    "Question Type": catName[i.category_id] || "",
     "Date/Time": toDate(i.occurred_at),
     Note: i.note,
     "Logged By": i.created_by_name || "",
@@ -84,6 +99,7 @@ export async function exportToExcel(userId) {
 
   const DT = "yyyy-mm-dd hh:mm";
   const wb = XLSX.utils.book_new();
+  addSheet(XLSX, wb, "Question Types", summaryRows, {});
   addSheet(XLSX, wb, "Meisters", meisterRows, { "Last Contact": DT, "Created At": DT, "Last Updated At": DT });
   addSheet(XLSX, wb, "Interactions", interactionRows, { "Date/Time": DT, "Logged At": DT, "Edited At": DT });
   addSheet(XLSX, wb, "Comments", commentRows, { "Date/Time": DT, "Edited At": DT });

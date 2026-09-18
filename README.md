@@ -22,6 +22,10 @@ A private CRM for tracking Meister conversations (phone, text, email) during the
 
 **Activity Log**: team-wide feed of every conversation, grouped by day, with comment counts. Filter by team member, method, or search.
 
+**Question types**: every log box has an optional "Question type" dropdown (Allocation, PMA, Delivery, Build Options, Guest Engagement, Events — admins can add, rename, retire, or remove types on the Account page). Each entry shows its type as a chip you can change later if it was wrong. The Excel export gets a "Question Types" summary sheet and a column on Interactions.
+
+**Analytics** (nav tab): a dashboard over a date range (7/30/90 days, this month, last month, YTD, all time, custom) and optional concierge filter. KPI tiles (conversations, Meisters contacted, vehicles sold, follow-ups due this week); activity over time (daily/weekly/monthly bars); interactions by type (donut); activity by concierge (stacked by method); question types; Meisters by status; vehicles sold per month (line, from guest purchases); most engaged Meisters; and upcoming follow-up counters (overdue / this week / next week / this month / next month, with per-concierge splits). Every number, bar, slice, and row opens a slide-out drawer listing exactly the items behind it, with a CSV download. The question-type drawer also shows who's asking, who logged it, method mix, an 8-week trend, and every note, and lets you assign a type to untyped entries.
+
 **Notifications**: bell icon by your name. When a teammate comments on or logs activity for a Meister assigned to you, you get a notification here and a red dot on that Meister in the list. Opening the Meister clears it. Each person picks what triggers a notification on their Account page. Routing works by linking each login to a Concierge name (see setup).
 
 **Follow-Ups**: your own pending reminders across every Meister, grouped Overdue / Today / Tomorrow / This week / Later, with a badge in the nav for anything due today or overdue. Completed ones are one click away.
@@ -257,7 +261,38 @@ create trigger notify_on_activity after insert on interactions for each row exec
 update profiles set concierge = 'Logan'   where email = 'lwilliams@jacksondawson.com';
 update profiles set concierge = 'Freddie' where email = 'ftinkler@jacksondawson.com';
 
+-- question types (for client reporting)
+create table if not exists question_categories (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  sort_order int not null default 100,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+insert into question_categories (name, sort_order) values
+  ('Allocation', 10), ('PMA', 20), ('Delivery', 30), ('Build Options', 40), ('Guest Engagement', 50), ('Events', 60)
+on conflict (name) do nothing;
+alter table interactions add column if not exists category_id uuid references question_categories(id) on delete set null;
+create index if not exists interactions_category_idx on interactions (category_id);
+alter table question_categories enable row level security;
+drop policy if exists "categories_select" on question_categories;
+drop policy if exists "categories_admin_insert" on question_categories;
+drop policy if exists "categories_admin_update" on question_categories;
+drop policy if exists "categories_admin_delete" on question_categories;
+create policy "categories_select" on question_categories for select using (auth.role() = 'authenticated');
+create policy "categories_admin_insert" on question_categories for insert with check (public.is_admin());
+create policy "categories_admin_update" on question_categories for update using (public.is_admin()) with check (public.is_admin());
+create policy "categories_admin_delete" on question_categories for delete using (public.is_admin());
+
+-- lets anyone fix ONLY the question type on a locked entry
+create or replace function public.set_interaction_category(p_id uuid, p_category_id uuid)
+returns void language sql security definer set search_path = public as $$
+  update public.interactions set category_id = p_category_id
+  where id = p_id and auth.role() = 'authenticated';
+$$;
+
 -- live sync (wrapped so "already member" never errors)
+do $$ begin alter publication supabase_realtime add table question_categories; exception when duplicate_object then null; end $$;
 do $$ begin alter publication supabase_realtime add table notifications; exception when duplicate_object then null; end $$;
 do $$ begin alter publication supabase_realtime add table meisters; exception when duplicate_object then null; end $$;
 do $$ begin alter publication supabase_realtime add table interactions; exception when duplicate_object then null; end $$;
