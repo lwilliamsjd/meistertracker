@@ -208,22 +208,64 @@ button { font-family: inherit; cursor: pointer; }
 .status-sold { color: var(--green); }
 .status-not-interested { color: var(--red); }
 
-/* ---------- quick actions ---------- */
-.quick-actions { display:flex; gap:10px; margin-bottom: 4px; flex-wrap: wrap; }
-.qa-btn {
-  flex: 1;
-  min-width: 90px;
+/* ---------- meister page layout ---------- */
+.meister-layout { display: grid; grid-template-columns: 300px 1fr; gap: 24px; align-items: start; }
+.card {
   background: var(--panel);
   border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px;
+}
+.profile-sidebar { position: sticky; top: 82px; }
+.avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--red-dim);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 19px;
+  margin-bottom: 12px;
+}
+.mname { font-size: 17px; font-weight: 700; }
+.mrole { color: var(--grey); font-size: 13px; margin-bottom: 8px; }
+.profile-sidebar .status-pill { margin-bottom: 16px; }
+.profile-sidebar .quick-actions { margin-top: 4px; }
+.profile-sidebar .field { margin-bottom: 12px; }
+.profile-sidebar .field label {
+  display: block;
+  font-size: 11px;
+  color: var(--grey-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 3px;
+}
+.profile-sidebar .field div { font-size: 13px; word-break: break-word; }
+
+@media (max-width: 860px) {
+  .meister-layout { grid-template-columns: 1fr; }
+  .profile-sidebar { position: static; }
+}
+
+/* ---------- quick actions ---------- */
+.quick-actions { display:flex; gap:8px; margin-bottom: 4px; flex-wrap: wrap; }
+.qa-btn {
+  flex: 1;
+  min-width: 60px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 12px 8px;
+  padding: 10px 4px;
   text-align: center;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--text);
 }
 .qa-btn:hover { border-color: var(--red); }
-.qa-icon { display: block; font-size: 17px; margin-bottom: 4px; }
+.qa-icon { display: block; font-size: 15px; margin-bottom: 4px; }
 
 /* ---------- toolbar / filter chips ---------- */
 .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }

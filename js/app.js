@@ -114,7 +114,13 @@ async function render() {
   if (route.name === "meister") {
     const id = route.mode === "new" ? "new" : route.id;
     if (id !== lastMeisterId) {
-      uiState = { activeTab: "profile", composerOpen: false, composerMethod: "Phone", methodFilter: "", guestFormOpen: false };
+      uiState = {
+        activeTab: route.mode === "new" ? "profile" : "activity",
+        composerOpen: false,
+        composerMethod: "Phone",
+        methodFilter: "",
+        guestFormOpen: false,
+      };
       lastMeisterId = id;
     }
     return renderShell(() => renderMeister(route));
@@ -355,14 +361,16 @@ async function renderMeister(route) {
       ${!isNew ? `<button id="delete-btn" class="btn btn-danger">Delete</button>` : ""}
     </div>
 
+    <div class="${isNew ? "" : "meister-layout"}">
+      ${!isNew ? renderProfileSidebar(meister) : ""}
+      <div>
     <div class="tabs" id="tabs">
-      <button class="tab-btn ${uiState.activeTab === "profile" ? "active" : ""}" data-tab="profile">Profile</button>
       ${!isNew ? `<button class="tab-btn ${uiState.activeTab === "activity" ? "active" : ""}" data-tab="activity">Activity (${interactions.length})</button>` : ""}
       ${!isNew ? `<button class="tab-btn ${uiState.activeTab === "guests" ? "active" : ""}" data-tab="guests">Guests (${guests.length})</button>` : ""}
+      <button class="tab-btn ${uiState.activeTab === "profile" ? "active" : ""}" data-tab="profile">${isNew ? "" : "Edit "}Profile</button>
     </div>
 
     <div id="tab-profile" class="tab-panel" style="${uiState.activeTab === "profile" ? "" : "display:none"}">
-      ${!isNew ? renderQuickActions() : ""}
       <form id="profile-form" class="form-card">
         <div class="form-grid">
           <div class="form-field">
@@ -425,6 +433,8 @@ async function renderMeister(route) {
 
     ${!isNew ? renderActivityTab(interactions) : ""}
     ${!isNew ? renderGuestsTab(guests) : ""}
+      </div>
+    </div>
   `;
 
   wireTabs();
@@ -473,16 +483,44 @@ async function renderMeister(route) {
   }
 }
 
-// ---------- quick actions (Profile tab) ----------
-function renderQuickActions() {
+// ---------- profile sidebar ----------
+function renderProfileSidebar(meister) {
+  const cityLine = [meister.city, [meister.state, meister.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
   return `
-    <div class="quick-actions">
-      ${QUICK_ACTIONS.map(
-        (a) => `<button type="button" class="qa-btn" data-method="${a.method}"><span class="qa-icon">${a.icon}</span>${a.label}</button>`
-      ).join("")}
+    <div class="card profile-sidebar">
+      <div class="avatar">${initials(meister.name)}</div>
+      <div class="mname">${escapeHtml(meister.name)}</div>
+      ${meister.dealership ? `<div class="mrole">${escapeHtml(meister.dealership)}</div>` : ""}
+      <span class="status-pill status-${slug(meister.status)}">${escapeHtml(meister.status)}</span>
+
+      <div class="quick-actions">
+        ${QUICK_ACTIONS.map(
+          (a) => `<button type="button" class="qa-btn" data-method="${a.method}"><span class="qa-icon">${a.icon}</span>${a.label}</button>`
+        ).join("")}
+      </div>
+      <p class="muted" style="margin:-4px 0 16px">Logs the conversation here — doesn't place a call, send a text, or send an email.</p>
+
+      ${meister.phone ? `<div class="field"><label>Phone</label><div>${escapeHtml(meister.phone)}</div></div>` : ""}
+      ${meister.email ? `<div class="field"><label>Email</label><div>${escapeHtml(meister.email)}</div></div>` : ""}
+      ${meister.dealership_website ? `<div class="field"><label>Dealership Website</label><div><a href="${escapeAttr(withProtocol(meister.dealership_website))}" target="_blank" rel="noopener">${escapeHtml(meister.dealership_website)}</a></div></div>` : ""}
+      ${cityLine ? `<div class="field"><label>Location</label><div>${escapeHtml(cityLine)}</div></div>` : ""}
+      ${meister.profile_summary ? `<div class="field"><label>Profile Summary</label><div class="muted" style="font-size:13px">${escapeHtml(meister.profile_summary)}</div></div>` : ""}
     </div>
-    <p class="muted" style="margin:-6px 0 18px">These just log the conversation here — they don't place a call, send a text, or send an email.</p>
   `;
+}
+
+function initials(name) {
+  return (name || "")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() || "")
+    .join("");
+}
+
+function withProtocol(url) {
+  if (!url) return "#";
+  return /^https?:\/\//i.test(url) ? url : `https://${url}`;
 }
 
 function wireQuickActions() {
