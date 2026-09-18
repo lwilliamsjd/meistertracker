@@ -15,10 +15,14 @@ A private CRM for tracking Meister conversations (phone, text, email) during the
 - **Activity tab**: every logged conversation grouped by month with real timestamps. Filter by method. Log with a date/time (defaults to now, can be backdated). Edit any note; edits are marked.
   - **Follow-ups**: tick "Set a follow-up reminder" while logging (or use the Follow-up button) to create a titled reminder with a date and time. Each one has an **Outlook** button that opens a pre-filled Outlook 365 event, plus an .ics download for desktop Outlook. Mark done, edit, or delete your own.
   - **Comments**: reply under any logged activity. Teammates can add what they know; authors can edit their own comments.
+  - Logged entries themselves can't be edited (the database refuses it, not just the button). If something needs adding, add a comment. Admins can delete an entry after a confirmation.
+  - Completed follow-ups stay in the feed as their own entry ("Follow-up · completed by …"), and can be undone from there.
 - **Guests tab**: people this Meister referred or sold a vehicle to, with vehicle, purchase date, and notes. Editable.
 - **Edit Profile tab**: name, job title, status, concierge, contact details, address, dealership website. Phone auto-formats to (xxx) xxx-xxxx.
 
 **Activity Log**: team-wide feed of every conversation, grouped by day, with comment counts. Filter by team member, method, or search.
+
+**Notifications**: bell icon by your name. When a teammate comments on or logs activity for a Meister assigned to you, you get a notification here and a red dot on that Meister in the list. Opening the Meister clears it. Each person picks what triggers a notification on their Account page. Routing works by linking each login to a Concierge name (see setup).
 
 **Follow-Ups**: your own pending reminders across every Meister, grouped Overdue / Today / Tomorrow / This week / Later, with a badge in the nav for anything due today or overdue. Completed ones are one click away.
 
@@ -171,7 +175,90 @@ where m.next_follow_up is not null and m.created_by is not null
   and not exists (select 1 from follow_ups f where f.meister_id = m.id and f.user_id = m.created_by and f.title = 'Follow up');
 update meisters set next_follow_up = null where next_follow_up is not null;
 
+-- logged entries can no longer be edited (comments are the way to add context)
+drop policy if exists "interactions_update" on interactions;
+
+-- notification routing + preferences on profiles
+alter table profiles add column if not exists concierge text check (concierge is null or concierge in ('Freddie','Logan'));
+alter table profiles add column if not exists notify_comments boolean not null default true;
+alter table profiles add column if not exists notify_activity boolean not null default true;
+
+create or replace function public.set_notification_prefs(p_comments boolean, p_activity boolean)
+returns void language sql security definer set search_path = public as $$
+  update public.profiles
+  set notify_comments = coalesce(p_comments, notify_comments),
+      notify_activity = coalesce(p_activity, notify_activity)
+  where id = auth.uid();
+$$;
+
+-- notifications table
+create table if not exists notifications (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  actor_id uuid,
+  actor_name text,
+  kind text not null check (kind in ('comment','activity')),
+  meister_id uuid references meisters(id) on delete cascade,
+  interaction_id uuid references interactions(id) on delete cascade,
+  message text not null,
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists notifications_user_idx on notifications (user_id, read_at, created_at desc);
+alter table notifications enable row level security;
+drop policy if exists "notifications_select_own" on notifications;
+drop policy if exists "notifications_update_own" on notifications;
+drop policy if exists "notifications_delete_own" on notifications;
+create policy "notifications_select_own" on notifications for select using (user_id = auth.uid());
+create policy "notifications_update_own" on notifications for update using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy "notifications_delete_own" on notifications for delete using (user_id = auth.uid());
+
+-- the trigger that creates notifications
+create or replace function public.notify_concierge()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare
+  v_meister_id uuid; v_kind text; v_interaction_id uuid; v_actor_id uuid; v_actor_name text;
+  v_snippet text; v_method text; m record; target record; msg text;
+begin
+  if tg_table_name = 'interaction_comments' then
+    v_kind := 'comment'; v_interaction_id := new.interaction_id; v_actor_id := new.created_by;
+    v_actor_name := new.created_by_name; v_snippet := new.body;
+    select i.meister_id, i.method into v_meister_id, v_method from interactions i where i.id = new.interaction_id;
+  else
+    v_kind := 'activity'; v_interaction_id := new.id; v_actor_id := new.created_by;
+    v_actor_name := new.created_by_name; v_snippet := new.note; v_meister_id := new.meister_id; v_method := new.method;
+  end if;
+  if v_meister_id is null then return new; end if;
+  select id, name, concierge into m from meisters where id = v_meister_id;
+  if m.concierge is null then return new; end if;
+  select id, notify_comments, notify_activity into target from profiles where concierge = m.concierge limit 1;
+  if target.id is null or target.id = v_actor_id then return new; end if;
+  if v_kind = 'comment' and not target.notify_comments then return new; end if;
+  if v_kind = 'activity' and not target.notify_activity then return new; end if;
+  v_snippet := left(regexp_replace(coalesce(v_snippet, ''), '\s+', ' ', 'g'), 120);
+  if v_kind = 'comment' then
+    msg := coalesce(v_actor_name, 'Someone') || ' commented on ' || m.name || ': ' || v_snippet;
+  else
+    msg := coalesce(v_actor_name, 'Someone') || ' logged ' ||
+           case v_method when 'Other' then 'a note' when 'In Person' then 'an in-person visit' when 'Email' then 'an email' else 'a ' || lower(v_method) end ||
+           ' with ' || m.name || ': ' || v_snippet;
+  end if;
+  insert into notifications (user_id, actor_id, actor_name, kind, meister_id, interaction_id, message)
+  values (target.id, v_actor_id, v_actor_name, v_kind, v_meister_id, v_interaction_id, msg);
+  return new;
+end;
+$$;
+drop trigger if exists notify_on_comment on interaction_comments;
+create trigger notify_on_comment after insert on interaction_comments for each row execute procedure public.notify_concierge();
+drop trigger if exists notify_on_activity on interactions;
+create trigger notify_on_activity after insert on interactions for each row execute procedure public.notify_concierge();
+
+-- link each login to its Concierge name (this is what routes notifications)
+update profiles set concierge = 'Logan'   where email = 'lwilliams@jacksondawson.com';
+update profiles set concierge = 'Freddie' where email = 'ftinkler@jacksondawson.com';
+
 -- live sync (wrapped so "already member" never errors)
+do $$ begin alter publication supabase_realtime add table notifications; exception when duplicate_object then null; end $$;
 do $$ begin alter publication supabase_realtime add table meisters; exception when duplicate_object then null; end $$;
 do $$ begin alter publication supabase_realtime add table interactions; exception when duplicate_object then null; end $$;
 do $$ begin alter publication supabase_realtime add table guests; exception when duplicate_object then null; end $$;
@@ -179,7 +266,7 @@ do $$ begin alter publication supabase_realtime add table follow_ups; exception 
 do $$ begin alter publication supabase_realtime add table interaction_comments; exception when duplicate_object then null; end $$;
 ```
 
-Then make yourself admin (swap in your login email) — until you do, **nobody** can delete anything:
+Then make yourself admin (swap in your login email) — until you do, **nobody** can delete anything. (The block above already links lwilliams@ to Logan and ftinkler@ to Freddie for notifications; if a login uses a different email, adjust those two lines.)
 
 ```sql
 update profiles set is_admin = true where email = 'you@example.com';
@@ -206,11 +293,13 @@ Display names: each person can set their own from the Account page. To set one f
 update profiles set full_name = 'Jane Smith' where email = 'jane@example.com';
 ```
 
-### 4. Make yourself admin
+### 4. Make yourself admin and link logins to Concierge names
 ```sql
-update profiles set is_admin = true where email = 'you@example.com';
+update profiles set is_admin = true where email = 'lwilliams@jacksondawson.com';
+update profiles set concierge = 'Logan'   where email = 'lwilliams@jacksondawson.com';
+update profiles set concierge = 'Freddie' where email = 'ftinkler@jacksondawson.com';
 ```
-Only admins can delete Meisters, notes, and guests. Everyone else can add and edit.
+Only admins can delete Meisters, notes, and guests. Everyone else can add and edit. The concierge link is what routes notifications: activity on a Meister assigned to "Logan" notifies the login linked to Logan.
 
 ### 5. Connect the app to your Supabase project
 Open `js/config.js` and fill in your **Project URL** and **anon / publishable key** from **Project Settings → API Keys**. The URL must look like `https://xxxxx.supabase.co` with nothing after it. The anon key is safe to publish in a public repo — access is controlled by requiring a login plus the row-level security rules, not by hiding this key.

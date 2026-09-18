@@ -13,6 +13,9 @@ create table if not exists profiles (
   full_name text not null,
   email text,
   is_admin boolean not null default false,
+  concierge text check (concierge is null or concierge in ('Freddie','Logan')), -- which Concierge this login represents
+  notify_comments boolean not null default true,
+  notify_activity boolean not null default true,
   created_at timestamptz not null default now()
 );
 
@@ -58,6 +61,19 @@ as $$
   update public.profiles
   set full_name = trim(new_name)
   where id = auth.uid() and length(trim(new_name)) > 0;
+$$;
+
+-- Lets a signed-in user change their own notification preferences.
+create or replace function public.set_notification_prefs(p_comments boolean, p_activity boolean)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update public.profiles
+  set notify_comments = coalesce(p_comments, notify_comments),
+      notify_activity = coalesce(p_activity, notify_activity)
+  where id = auth.uid();
 $$;
 
 -- ============================================================
@@ -176,6 +192,92 @@ create table if not exists interaction_comments (
 create index if not exists interaction_comments_interaction_idx on interaction_comments (interaction_id);
 
 -- ============================================================
+-- NOTIFICATIONS  (created by the database when someone else acts on a
+-- Meister assigned to you; see notify_concierge() below)
+-- ============================================================
+create table if not exists notifications (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  actor_id uuid,
+  actor_name text,
+  kind text not null check (kind in ('comment','activity')),
+  meister_id uuid references meisters(id) on delete cascade,
+  interaction_id uuid references interactions(id) on delete cascade,
+  message text not null,
+  read_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists notifications_user_idx on notifications (user_id, read_at, created_at desc);
+
+create or replace function public.notify_concierge()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_meister_id uuid;
+  v_kind text;
+  v_interaction_id uuid;
+  v_actor_id uuid;
+  v_actor_name text;
+  v_snippet text;
+  v_method text;
+  m record;
+  target record;
+  msg text;
+begin
+  if tg_table_name = 'interaction_comments' then
+    v_kind := 'comment';
+    v_interaction_id := new.interaction_id;
+    v_actor_id := new.created_by;
+    v_actor_name := new.created_by_name;
+    v_snippet := new.body;
+    select i.meister_id, i.method into v_meister_id, v_method from interactions i where i.id = new.interaction_id;
+  else
+    v_kind := 'activity';
+    v_interaction_id := new.id;
+    v_actor_id := new.created_by;
+    v_actor_name := new.created_by_name;
+    v_snippet := new.note;
+    v_meister_id := new.meister_id;
+    v_method := new.method;
+  end if;
+
+  if v_meister_id is null then return new; end if;
+  select id, name, concierge into m from meisters where id = v_meister_id;
+  if m.concierge is null then return new; end if;
+
+  select id, notify_comments, notify_activity into target from profiles where concierge = m.concierge limit 1;
+  if target.id is null or target.id = v_actor_id then return new; end if;
+  if v_kind = 'comment' and not target.notify_comments then return new; end if;
+  if v_kind = 'activity' and not target.notify_activity then return new; end if;
+
+  v_snippet := left(regexp_replace(coalesce(v_snippet, ''), '\s+', ' ', 'g'), 120);
+  if v_kind = 'comment' then
+    msg := coalesce(v_actor_name, 'Someone') || ' commented on ' || m.name || ': ' || v_snippet;
+  else
+    msg := coalesce(v_actor_name, 'Someone') || ' logged ' ||
+           case v_method when 'Other' then 'a note' when 'In Person' then 'an in-person visit' when 'Email' then 'an email' else 'a ' || lower(v_method) end ||
+           ' with ' || m.name || ': ' || v_snippet;
+  end if;
+
+  insert into notifications (user_id, actor_id, actor_name, kind, meister_id, interaction_id, message)
+  values (target.id, v_actor_id, v_actor_name, v_kind, v_meister_id, v_interaction_id, msg);
+  return new;
+end;
+$$;
+
+drop trigger if exists notify_on_comment on interaction_comments;
+create trigger notify_on_comment after insert on interaction_comments
+  for each row execute procedure public.notify_concierge();
+
+drop trigger if exists notify_on_activity on interactions;
+create trigger notify_on_activity after insert on interactions
+  for each row execute procedure public.notify_concierge();
+
+-- ============================================================
 -- ROW LEVEL SECURITY
 -- Any signed-in team member can read, add, and edit everything.
 -- Only admins (profiles.is_admin = true) can DELETE.
@@ -186,6 +288,7 @@ alter table interactions enable row level security;
 alter table guests enable row level security;
 alter table follow_ups enable row level security;
 alter table interaction_comments enable row level security;
+alter table notifications enable row level security;
 
 -- profiles: everyone signed in can read the team list; edits go through set_display_name()
 drop policy if exists "profiles_read_all" on profiles;
@@ -202,7 +305,8 @@ create policy "meisters_insert" on meisters for insert with check (auth.role() =
 create policy "meisters_update" on meisters for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "meisters_delete_admin" on meisters for delete using (public.is_admin());
 
--- interactions
+-- interactions: logged entries are a record — they can be read, added, and
+-- (by admins) deleted, but never edited. Add context as a comment instead.
 drop policy if exists "interactions_all_authenticated" on interactions;
 drop policy if exists "interactions_select" on interactions;
 drop policy if exists "interactions_insert" on interactions;
@@ -210,7 +314,6 @@ drop policy if exists "interactions_update" on interactions;
 drop policy if exists "interactions_delete_admin" on interactions;
 create policy "interactions_select" on interactions for select using (auth.role() = 'authenticated');
 create policy "interactions_insert" on interactions for insert with check (auth.role() = 'authenticated');
-create policy "interactions_update" on interactions for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "interactions_delete_admin" on interactions for delete using (public.is_admin());
 
 -- guests
@@ -244,9 +347,21 @@ create policy "comments_insert" on interaction_comments for insert with check (a
 create policy "comments_update" on interaction_comments for update using (created_by = auth.uid() or public.is_admin()) with check (created_by = auth.uid() or public.is_admin());
 create policy "comments_delete_admin" on interaction_comments for delete using (public.is_admin());
 
+-- notifications: private to the person they're for. Only the database creates them.
+drop policy if exists "notifications_select_own" on notifications;
+drop policy if exists "notifications_update_own" on notifications;
+drop policy if exists "notifications_delete_own" on notifications;
+create policy "notifications_select_own" on notifications for select using (user_id = auth.uid());
+create policy "notifications_update_own" on notifications for update using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy "notifications_delete_own" on notifications for delete using (user_id = auth.uid());
+
 -- ============================================================
 -- REALTIME  (wrapped so re-running never errors with "already member")
 -- ============================================================
+do $$ begin
+  alter publication supabase_realtime add table notifications;
+exception when duplicate_object then null; end $$;
+
 do $$ begin
   alter publication supabase_realtime add table follow_ups;
 exception when duplicate_object then null; end $$;
@@ -268,6 +383,10 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 -- ============================================================
--- MAKE YOURSELF ADMIN  (run once, swap in your login email)
+-- MAKE YOURSELF ADMIN + LINK LOGINS TO CONCIERGE NAMES  (run once)
+-- The concierge link is what routes notifications: when someone acts on a
+-- Meister assigned to "Logan", the profile with concierge = 'Logan' is notified.
 -- ============================================================
--- update profiles set is_admin = true where email = 'you@example.com';
+-- update profiles set is_admin = true where email = 'lwilliams@jacksondawson.com';
+-- update profiles set concierge = 'Logan'   where email = 'lwilliams@jacksondawson.com';
+-- update profiles set concierge = 'Freddie' where email = 'ftinkler@jacksondawson.com';

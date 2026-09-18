@@ -15,7 +15,6 @@ import {
   deleteMeister,
   listInteractions,
   addInteraction,
-  updateInteraction,
   deleteInteraction,
   listGuests,
   addGuest,
@@ -23,6 +22,7 @@ import {
   deleteGuest,
   listFollowUpsForMeister,
   listMyFollowUps,
+  listRecentDoneFollowUps,
   countMyDueFollowUps,
   addFollowUp,
   updateFollowUp,
@@ -34,6 +34,12 @@ import {
   deleteComment,
   listRecentActivity,
   subscribeToChanges,
+  setNotificationPrefs,
+  listNotifications,
+  listUnreadNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+  markMeisterNotificationsRead,
 } from "./api.js";
 import { exportToExcel } from "./export.js";
 
@@ -41,6 +47,7 @@ const app = document.getElementById("app");
 let currentProfile = null;
 let unsubscribeRealtime = null;
 let myDueCount = 0;
+let myUnread = []; // [{id, meister_id}] unread notifications for the signed-in user
 
 const STATUSES = ["New", "Contacted", "Engaged", "Sold", "Not Interested"];
 const CONCIERGES = ["Freddie", "Logan"];
@@ -96,7 +103,6 @@ function freshUiState(tab) {
     composerOpen: false,
     composerMethod: "Phone",
     composerWithFollowUp: false,
-    editingNoteId: null,
     methodFilter: "",
     guestFormOpen: false,
     editingGuestId: null,
@@ -194,6 +200,7 @@ function parseHash() {
   if (parts[0] === "login") return { name: "login", key: "login" };
   if (parts[0] === "activity") return { name: "activity", key: "activity" };
   if (parts[0] === "followups") return { name: "followups", key: "followups" };
+  if (parts[0] === "notifications") return { name: "notifications", key: "notifications" };
   if (parts[0] === "account") return { name: "account", key: "account" };
   if (parts[0] === "meister" && parts[1] === "new") return { name: "meister", mode: "new", key: "meister:new" };
   if (parts[0] === "meister" && parts[1]) return { name: "meister", mode: "view", id: parts[1], key: `meister:${parts[1]}` };
@@ -230,12 +237,15 @@ async function render() {
     lastPaintedKey = route.key;
   }
 
-  if (currentProfile) myDueCount = await countMyDueFollowUps(currentProfile.id);
+  if (currentProfile) {
+    [myDueCount, myUnread] = await Promise.all([countMyDueFollowUps(currentProfile.id), listUnreadNotifications(currentProfile.id)]);
+  }
   if (seq !== renderSeq) return;
 
   if (route.name === "dashboard") return renderDashboard(route, seq);
   if (route.name === "activity") return renderActivity(route, seq);
   if (route.name === "followups") return renderFollowUpsPage(route, seq);
+  if (route.name === "notifications") return renderNotificationsPage(route, seq);
   if (route.name === "account") return renderAccount(route, seq);
   if (route.name === "meister") return renderMeister(route, seq);
 }
@@ -252,6 +262,7 @@ function renderShell(route, contentFn) {
           <a href="#/followups" class="${route.name === "followups" ? "active" : ""}">Follow-Ups${myDueCount ? `<span class="nav-badge">${myDueCount}</span>` : ""}</a>
         </nav>
         <div class="user-area">
+          <a href="#/notifications" class="bell ${route.name === "notifications" ? "active" : ""}" title="Notifications">${I.bell}${myUnread.length ? `<span class="bell-count">${myUnread.length > 99 ? "99+" : myUnread.length}</span>` : ""}</a>
           <a href="#/account" class="user-chip ${route.name === "account" ? "active" : ""}" title="Account settings">
             <span class="user-avatar">${initials(currentProfile?.full_name)}</span>
             <span class="user-name">${escapeHtml(currentProfile?.full_name || "")}</span>
@@ -476,12 +487,13 @@ function drawMeisterRows(meisters) {
   const tbody = document.getElementById("meister-rows");
   const emptyState = document.getElementById("empty-state");
   emptyState.style.display = filtered.length ? "none" : "block";
+  const unreadMeisters = new Set(myUnread.map((n) => n.meister_id));
   tbody.innerHTML = filtered
     .map(
       (m) => `
       <tr class="clickable-row" data-id="${m.id}">
         <td class="cell-name">
-          <div>${escapeHtml(m.name)}</div>
+          <div>${unreadMeisters.has(m.id) ? `<span class="unread-dot" title="New activity"></span>` : ""}${escapeHtml(m.name)}</div>
           <div class="muted cell-sub">${escapeHtml(m.job_title || formatPhone(m.phone) || m.email || "")}</div>
         </td>
         <td>${escapeHtml(m.dealership || "—")}${m.city ? `<div class="muted cell-sub">${escapeHtml([m.city, m.state].filter(Boolean).join(", "))}</div>` : ""}</td>
@@ -503,9 +515,9 @@ function drawMeisterRows(meisters) {
 // ACTIVITY LOG (team-wide)
 // ============================================================
 async function renderActivity(route, seq) {
-  let activity, commentCounts;
+  let notes, doneFus, commentCounts;
   try {
-    [activity, commentCounts] = await Promise.all([listRecentActivity(300), listCommentCounts()]);
+    [notes, doneFus, commentCounts] = await Promise.all([listRecentActivity(300), listRecentDoneFollowUps(300), listCommentCounts()]);
   } catch (err) {
     paint(route, seq, (c) => (c.innerHTML = `<div class="empty-state">Couldn't load activity: ${escapeHtml(err.message)}</div>`));
     return;
@@ -513,7 +525,13 @@ async function renderActivity(route, seq) {
   let container;
   if (!paint(route, seq, (c) => (container = c))) return;
 
-  const people = [...new Set(activity.map((a) => a.created_by_name).filter(Boolean))].sort();
+  // One feed: logged conversations + completed follow-ups, newest first.
+  const activity = [
+    ...notes.map((n) => ({ type: "note", time: n.occurred_at, person: n.created_by_name, method: n.method, meister_id: n.meister_id, meisterName: n.meisters?.name, note: n.note, id: n.id })),
+    ...doneFus.map((f) => ({ type: "fu", time: f.done_at, person: f.user_name, method: "__fu", meister_id: f.meister_id, meisterName: f.meisters?.name, title: f.title, due_at: f.due_at, id: f.id })),
+  ].sort((a, b) => (a.time < b.time ? 1 : -1));
+
+  const people = [...new Set(activity.map((a) => a.person).filter(Boolean))].sort();
 
   container.innerHTML = `
     <div class="page-header">
@@ -529,6 +547,7 @@ async function renderActivity(route, seq) {
     <div class="filter-chips" id="act-chips" style="margin-bottom:16px">
       <button class="chip ${!actState.method ? "active" : ""}" data-method="">All</button>
       ${METHODS.map((m) => `<button class="chip ${actState.method === m ? "active" : ""}" data-method="${m}">${METHOD_ICON[m]} ${m}</button>`).join("")}
+      <button class="chip ${actState.method === "__fu" ? "active" : ""}" data-method="__fu">${I.check} Follow-ups done</button>
     </div>
     <div id="act-feed"></div>
   `;
@@ -538,31 +557,45 @@ async function renderActivity(route, seq) {
     const list = activity.filter(
       (a) =>
         (!actState.method || a.method === actState.method) &&
-        (!actState.person || a.created_by_name === actState.person) &&
-        (!q || (a.note || "").toLowerCase().includes(q) || (a.meisters?.name || "").toLowerCase().includes(q))
+        (!actState.person || a.person === actState.person) &&
+        (!q || (a.note || a.title || "").toLowerCase().includes(q) || (a.meisterName || "").toLowerCase().includes(q))
     );
     const feed = document.getElementById("act-feed");
     if (!list.length) {
       feed.innerHTML = `<div class="empty-state">${activity.length ? "Nothing matches those filters." : "No activity logged yet. Notes your team adds will show up here."}</div>`;
       return;
     }
-    feed.innerHTML = groupBy(list, (a) => dayLabel(a.occurred_at))
+    feed.innerHTML = groupBy(list, (a) => dayLabel(a.time))
       .map(
         ([label, items]) => `
         <div class="group-label">${escapeHtml(label)}</div>
         <div class="activity-feed">
           ${items
             .map((a) => {
+              if (a.type === "fu") {
+                return `
+            <div class="activity-item">
+              <span class="method-badge method-followup">${I.check} Follow-up</span>
+              <div class="activity-body">
+                <div class="activity-top">
+                  <a href="#/meister/${a.meister_id}" class="activity-meister">${escapeHtml(a.meisterName || "Unknown Meister")}</a>
+                  <span class="muted">completed by ${escapeHtml(a.person || "someone")}</span>
+                  <span class="muted activity-time">${fmtTime(a.time)}</span>
+                </div>
+                <div class="activity-note">${escapeHtml(a.title)} <span class="muted">· was due ${fmtDateTime(a.due_at)}</span></div>
+              </div>
+            </div>`;
+              }
               const n = commentCounts[a.id] || 0;
               return `
             <div class="activity-item">
               <span class="method-badge method-${slug(a.method)}">${METHOD_ICON[a.method] || ""} ${escapeHtml(a.method)}</span>
               <div class="activity-body">
                 <div class="activity-top">
-                  <a href="#/meister/${a.meister_id}" class="activity-meister">${escapeHtml(a.meisters?.name || "Unknown Meister")}</a>
-                  <span class="muted">by ${escapeHtml(a.created_by_name || "someone")}</span>
+                  <a href="#/meister/${a.meister_id}" class="activity-meister">${escapeHtml(a.meisterName || "Unknown Meister")}</a>
+                  <span class="muted">by ${escapeHtml(a.person || "someone")}</span>
                   ${n ? `<a href="#/meister/${a.meister_id}" class="comment-count">${I.reply} ${n} ${n === 1 ? "comment" : "comments"}</a>` : ""}
-                  <span class="muted activity-time">${fmtTime(a.occurred_at)}</span>
+                  <span class="muted activity-time">${fmtTime(a.time)}</span>
                 </div>
                 <div class="activity-note">${escapeHtml(a.note)}</div>
               </div>
@@ -665,7 +698,7 @@ function fuRowHtml(f, meisterName, showMeister) {
   const mine = canManageFu(f);
   return `
     <div class="fu-row ${f.done_at ? "is-done" : ""}" data-id="${f.id}">
-      ${mine ? `<button class="fu-check ${f.done_at ? "on" : ""}" data-fu-toggle="${f.id}" title="${f.done_at ? "Mark not done" : "Mark done"}">${f.done_at ? I.check : ""}</button>` : `<span class="fu-check static"></span>`}
+      ${mine ? `<button class="fu-check ${f.done_at ? "on" : ""}" data-fu-toggle="${f.id}" data-done="${f.done_at ? "1" : "0"}" title="${f.done_at ? "Mark not done" : "Mark done"}">${f.done_at ? I.check : ""}</button>` : `<span class="fu-check static"></span>`}
       <div class="fu-body">
         <div class="fu-title">${escapeHtml(f.title)}</div>
         <div class="fu-meta">
@@ -704,8 +737,7 @@ function fuFormHtml(existing, meisterName) {
 function wireFollowUpControls(container, { onEdit, onCancel, afterSave, meisterId }) {
   container.querySelectorAll("[data-fu-toggle]").forEach((b) =>
     b.addEventListener("click", async () => {
-      const row = b.closest(".fu-row");
-      const wasDone = row.classList.contains("is-done");
+      const wasDone = b.dataset.done === "1";
       try {
         await updateFollowUp(b.dataset.fuToggle, { done_at: wasDone ? null : new Date().toISOString() });
         toast(wasDone ? "Marked not done" : "Follow-up done");
@@ -812,6 +844,80 @@ function defaultFollowUpTime() {
 }
 
 // ============================================================
+// NOTIFICATIONS PAGE
+// ============================================================
+async function renderNotificationsPage(route, seq) {
+  let items;
+  try {
+    items = await listNotifications(currentProfile.id, 150);
+  } catch (err) {
+    paint(route, seq, (c) => (c.innerHTML = `<div class="empty-state">Couldn't load notifications: ${escapeHtml(err.message)}</div>`));
+    return;
+  }
+  let container;
+  if (!paint(route, seq, (c) => (container = c))) return;
+
+  const unread = items.filter((n) => !n.read_at);
+  const linked = !!currentProfile.concierge;
+
+  container.innerHTML = `
+    <div class="page-header">
+      <div><h1>Notifications</h1>
+        <p class="muted">${
+          linked
+            ? `Activity by teammates on Meisters assigned to <strong>${escapeHtml(currentProfile.concierge)}</strong>. ${unread.length ? unread.length + " unread." : "You're caught up."}`
+            : `Your login isn't linked to a Concierge name yet, so nothing routes here. Your admin can link it (see README).`
+        }</p>
+      </div>
+      <div class="page-actions">
+        ${unread.length ? `<button id="mark-all-btn" class="btn btn-ghost">${I.check} Mark all read</button>` : ""}
+        <a href="#/account" class="btn btn-ghost">Preferences</a>
+      </div>
+    </div>
+    ${
+      items.length
+        ? groupBy(items, (n) => dayLabel(n.created_at))
+            .map(
+              ([label, group]) => `
+          <div class="group-label">${escapeHtml(label)}</div>
+          <div class="notif-list">
+            ${group
+              .map(
+                (n) => `
+              <a href="#/meister/${n.meister_id}" class="notif ${n.read_at ? "" : "unread"}" data-id="${n.id}">
+                <span class="notif-ic">${n.kind === "comment" ? I.reply : I.note}</span>
+                <span class="notif-body">
+                  <span class="notif-msg">${escapeHtml(n.message)}</span>
+                  <span class="muted">${escapeHtml(n.meisters?.name || "")} · ${fmtTime(n.created_at)}</span>
+                </span>
+                ${n.read_at ? "" : `<span class="unread-dot"></span>`}
+              </a>`
+              )
+              .join("")}
+          </div>`
+            )
+            .join("")
+        : `<div class="empty-state">Nothing yet. When a teammate comments on or logs activity for one of your Meisters, it shows up here.</div>`
+    }
+  `;
+
+  document.getElementById("mark-all-btn")?.addEventListener("click", async () => {
+    try {
+      await markAllNotificationsRead(currentProfile.id);
+      render();
+    } catch (err) {
+      toast("Couldn't update: " + err.message, "error");
+    }
+  });
+  container.querySelectorAll(".notif.unread").forEach((a) =>
+    a.addEventListener("click", () => {
+      // fire-and-forget; navigation proceeds via the href
+      markNotificationRead(a.dataset.id).catch(() => {});
+    })
+  );
+}
+
+// ============================================================
 // ACCOUNT
 // ============================================================
 async function renderAccount(route, seq) {
@@ -838,6 +944,19 @@ async function renderAccount(route, seq) {
         <button class="btn btn-primary" type="submit">Update password</button>
       </form>
 
+      <form id="notif-form" class="form-card">
+        <h3>${I.bell} Notifications</h3>
+        <p class="muted">${
+          currentProfile.concierge
+            ? `You're linked to Concierge <strong>${escapeHtml(currentProfile.concierge)}</strong>. You'll be notified when a teammate acts on a Meister assigned to ${escapeHtml(currentProfile.concierge)}.`
+            : `Your login isn't linked to a Concierge name yet, so notifications won't route to you. Your admin can link it (see README).`
+        }</p>
+        <label class="pref-row"><input type="checkbox" id="pref-comments" ${currentProfile.notify_comments ? "checked" : ""} /> Someone comments on an activity</label>
+        <label class="pref-row"><input type="checkbox" id="pref-activity" ${currentProfile.notify_activity ? "checked" : ""} /> Someone logs a call, text, email, or note</label>
+        <p class="muted" style="margin:10px 0 12px">Email reminders aren't available yet; notifications show in the app (bell icon and a red dot on the Meister list).</p>
+        <button class="btn btn-primary" type="submit">Save preferences</button>
+      </form>
+
       <div class="form-card">
         <h3>${I.users} Team</h3>
         <p class="muted">${currentProfile.is_admin ? "You're an admin: you can delete meisters, notes, comments, and guests. Everyone else can add and edit." : "Only admins can delete records. Ask your team lead if something needs removing."}</p>
@@ -860,6 +979,21 @@ async function renderAccount(route, seq) {
       render();
     } catch (err) {
       toast("Couldn't update name: " + err.message, "error");
+    }
+  });
+
+  document.getElementById("notif-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const prefs = {
+      notify_comments: document.getElementById("pref-comments").checked,
+      notify_activity: document.getElementById("pref-activity").checked,
+    };
+    try {
+      await setNotificationPrefs(prefs);
+      Object.assign(currentProfile, prefs);
+      toast("Preferences saved");
+    } catch (err) {
+      toast("Couldn't save preferences: " + err.message, "error");
     }
   });
 
@@ -897,6 +1031,11 @@ async function renderMeister(route, seq) {
     } catch {
       paint(route, seq, (c) => (c.innerHTML = `<div class="empty-state">Could not load this meister. They may have been removed.</div>`));
       return;
+    }
+    // Opening the Meister clears its unread notifications for you.
+    if (myUnread.some((n) => n.meister_id === route.id)) {
+      markMeisterNotificationsRead(currentProfile.id, route.id).catch(() => {});
+      myUnread = myUnread.filter((n) => n.meister_id !== route.id);
     }
   }
   let container;
@@ -1066,7 +1205,6 @@ function wireQuickActions() {
     btn.addEventListener("click", () => {
       uiState.activeTab = "activity";
       uiState.composerOpen = true;
-      uiState.editingNoteId = null;
       uiState.composerMethod = btn.dataset.method;
       uiState.focusId = "c-note";
       render();
@@ -1076,22 +1214,30 @@ function wireQuickActions() {
 
 // ---------- activity tab ----------
 function renderActivityTab(meister, interactions, followUps, comments) {
-  const filtered = uiState.methodFilter ? interactions.filter((i) => i.method === uiState.methodFilter) : interactions;
   const pendingFus = followUps.filter((f) => !f.done_at);
+  const doneFus = followUps.filter((f) => f.done_at);
   const fusByNote = {};
   for (const f of followUps) if (f.interaction_id) (fusByNote[f.interaction_id] ||= []).push(f);
   const commentsByNote = {};
   for (const c of comments) (commentsByNote[c.interaction_id] ||= []).push(c);
 
+  // The feed is logged conversations plus completed follow-ups, newest first.
+  const feed = [
+    ...interactions.map((i) => ({ type: "note", time: i.occurred_at, method: i.method, data: i })),
+    ...doneFus.map((f) => ({ type: "fu", time: f.done_at, method: "__fu", data: f })),
+  ].sort((a, b) => (a.time < b.time ? 1 : -1));
+  const filtered = uiState.methodFilter ? feed.filter((x) => x.method === uiState.methodFilter) : feed;
+
   return `
     <div id="tab-activity" class="tab-panel" style="${uiState.activeTab === "activity" ? "" : "display:none"}">
       <div class="toolbar">
         <div class="filter-chips" id="method-chips">
-          <button type="button" class="chip ${!uiState.methodFilter ? "active" : ""}" data-method="">All <span class="chip-n">${interactions.length}</span></button>
+          <button type="button" class="chip ${!uiState.methodFilter ? "active" : ""}" data-method="">All <span class="chip-n">${feed.length}</span></button>
           ${METHODS.map((m) => {
             const n = interactions.filter((i) => i.method === m).length;
             return `<button type="button" class="chip ${uiState.methodFilter === m ? "active" : ""}" data-method="${m}">${METHOD_ICON[m]} ${m} <span class="chip-n">${n}</span></button>`;
           }).join("")}
+          <button type="button" class="chip ${uiState.methodFilter === "__fu" ? "active" : ""}" data-method="__fu">${I.check} Done <span class="chip-n">${doneFus.length}</span></button>
         </div>
         <div class="page-actions">
           <button type="button" id="open-fu-btn" class="btn btn-ghost">${I.bell} Follow-up</button>
@@ -1100,7 +1246,7 @@ function renderActivityTab(meister, interactions, followUps, comments) {
       </div>
 
       ${uiState.fuFormOpen && !uiState.editingFuId ? fuFormHtml(null, meister.name) : ""}
-      ${uiState.composerOpen && !uiState.editingNoteId ? composerHtml(null) : ""}
+      ${uiState.composerOpen ? composerHtml() : ""}
 
       ${
         pendingFus.length
@@ -1113,29 +1259,44 @@ function renderActivityTab(meister, interactions, followUps, comments) {
 
       ${
         filtered.length
-          ? groupBy(filtered, (i) => monthLabel(i.occurred_at))
+          ? groupBy(filtered, (x) => monthLabel(x.time))
               .map(
                 ([label, items]) => `
             <div class="group-label">${escapeHtml(label)}</div>
             <div class="notes-list">
-              ${items.map((i) => (uiState.editingNoteId === i.id ? composerHtml(i) : noteCardHtml(i, fusByNote[i.id] || [], commentsByNote[i.id] || [], meister))).join("")}
+              ${items.map((x) => (x.type === "fu" ? fuDoneCardHtml(x.data) : noteCardHtml(x.data, fusByNote[x.data.id] || [], commentsByNote[x.data.id] || []))).join("")}
             </div>`
               )
               .join("")
-          : `<div class="empty-state">${interactions.length ? "No " + uiState.methodFilter.toLowerCase() + " entries yet." : "No conversations logged yet. Use Call / Text / Email / Note on the left to add one."}</div>`
+          : `<div class="empty-state">${feed.length ? "Nothing in this filter yet." : "No conversations logged yet. Use Call / Text / Email / Note on the left to add one."}</div>`
       }
     </div>
   `;
 }
 
-function noteCardHtml(i, fus, cmts, meister) {
+function fuDoneCardHtml(f) {
+  const mine = canManageFu(f);
+  return `
+    <div class="note-card fu-done-card" data-fu-id="${f.id}">
+      <div class="note-top">
+        <span class="method-badge method-followup">${I.check} Follow-up</span>
+        <span class="muted">${escapeHtml(f.user_name || "someone")} &middot; completed ${fmtDateTime(f.done_at)}</span>
+        <span class="note-actions">
+          ${mine ? `<button class="icon-btn" data-fu-toggle="${f.id}" data-done="1" title="Mark not done">${I.circle}</button>
+          <button class="icon-btn danger" data-fu-delete="${f.id}" title="Delete">${I.trash}</button>` : ""}
+        </span>
+      </div>
+      <div class="note-text">${escapeHtml(f.title)} <span class="muted">· was due ${fmtDateTime(f.due_at)}</span></div>
+    </div>`;
+}
+
+function noteCardHtml(i, fus, cmts) {
   return `
     <div class="note-card" data-note-id="${i.id}">
       <div class="note-top">
         <span class="method-badge method-${slug(i.method)}">${METHOD_ICON[i.method] || ""} ${escapeHtml(i.method)}</span>
-        <span class="muted">${escapeHtml(i.created_by_name || "someone")} &middot; ${fmtDateTime(i.occurred_at)}${i.edited_at ? ` &middot; <em>edited</em>` : ""}</span>
+        <span class="muted">${escapeHtml(i.created_by_name || "someone")} &middot; ${fmtDateTime(i.occurred_at)}</span>
         <span class="note-actions">
-          <button class="icon-btn edit-note-btn" data-id="${i.id}" title="Edit">${I.edit}</button>
           ${isAdmin() ? `<button class="icon-btn danger delete-note-btn" data-id="${i.id}" title="Delete">${I.trash}</button>` : ""}
         </span>
       </div>
@@ -1193,36 +1354,33 @@ function commentFormHtml(noteId, existing) {
     </form>`;
 }
 
-function composerHtml(existing) {
-  const p = existing ? `e-${existing.id}-` : "c-";
-  const method = dv(`${p}method`, existing ? existing.method : uiState.composerMethod);
-  const when = dv(`${p}when`, toLocalInput(existing ? existing.occurred_at : new Date().toISOString()));
-  const note = dv(`${p}note`, existing ? existing.note : "");
-  const withFu = !existing && uiState.composerWithFollowUp;
+function composerHtml() {
+  const p = "c-";
+  const method = dv(`${p}method`, uiState.composerMethod);
+  const when = dv(`${p}when`, toLocalInput(new Date().toISOString()));
+  const note = dv(`${p}note`, "");
+  const withFu = uiState.composerWithFollowUp;
   return `
-    <form class="composer" data-edit-id="${existing ? existing.id : ""}" data-prefix="${p}">
+    <form class="composer" data-prefix="${p}">
       <div class="composer-top">
         <select id="${p}method" data-draft>${METHODS.map((m) => `<option ${method === m ? "selected" : ""}>${m}</option>`).join("")}</select>
         <input id="${p}when" data-draft type="datetime-local" value="${escapeAttr(when)}" required />
-        <span class="muted composer-hint">${existing ? "Editing" : "When it happened"}</span>
+        <span class="muted composer-hint">When it happened</span>
       </div>
       <textarea id="${p}note" data-draft rows="3" required placeholder="What did you talk about? Any follow-up needed?">${escapeHtml(note)}</textarea>
+      <label class="fu-toggle"><input type="checkbox" id="c-fu-on" ${withFu ? "checked" : ""} /> ${I.bell} Set a follow-up reminder</label>
       ${
-        existing
-          ? ""
-          : `<label class="fu-toggle"><input type="checkbox" id="c-fu-on" ${withFu ? "checked" : ""} /> ${I.bell} Set a follow-up reminder</label>
-             ${
-               withFu
-                 ? `<div class="fu-form-grid" style="margin-top:8px">
-                      <input id="c-fu-title" data-draft placeholder="Follow-up title" value="${escapeAttr(dv("c-fu-title", ""))}" />
-                      <input id="c-fu-when" data-draft type="datetime-local" value="${escapeAttr(dv("c-fu-when", toLocalInput(defaultFollowUpTime())))}" />
-                    </div>`
-                 : ""
-             }`
+        withFu
+          ? `<div class="fu-form-grid" style="margin-top:8px">
+              <input id="c-fu-title" data-draft placeholder="Follow-up title" value="${escapeAttr(dv("c-fu-title", ""))}" />
+              <input id="c-fu-when" data-draft type="datetime-local" value="${escapeAttr(dv("c-fu-when", toLocalInput(defaultFollowUpTime())))}" />
+            </div>`
+          : ""
       }
+      <p class="muted composer-note">Logged entries can't be edited afterward. Add anything extra as a comment.</p>
       <div class="composer-actions">
         <button type="button" class="btn cancel-composer-btn">Cancel</button>
-        <button type="submit" class="btn btn-primary">${existing ? "Save changes" : "Log it"}</button>
+        <button type="submit" class="btn btn-primary">Log it</button>
       </div>
     </form>`;
 }
@@ -1237,7 +1395,6 @@ function wireActivityTab(container, meister) {
 
   document.getElementById("toggle-composer-btn")?.addEventListener("click", () => {
     uiState.composerOpen = true;
-    uiState.editingNoteId = null;
     uiState.focusId = "c-note";
     render();
   });
@@ -1257,16 +1414,12 @@ function wireActivityTab(container, meister) {
 
   document.querySelectorAll(".composer:not(.fu-form)").forEach((form) => {
     const prefix = form.dataset.prefix;
-    const editId = form.dataset.editId;
 
     form.querySelector(".cancel-composer-btn").addEventListener("click", () => {
       clearDrafts(prefix);
       clearDrafts("c-fu-");
-      if (editId) uiState.editingNoteId = null;
-      else {
-        uiState.composerOpen = false;
-        uiState.composerWithFollowUp = false;
-      }
+      uiState.composerOpen = false;
+      uiState.composerWithFollowUp = false;
       render();
     });
 
@@ -1280,7 +1433,7 @@ function wireActivityTab(container, meister) {
       if (!payload.note || !payload.occurred_at) return;
 
       let fu = null;
-      if (!editId && uiState.composerWithFollowUp) {
+      if (uiState.composerWithFollowUp) {
         const title = document.getElementById("c-fu-title")?.value.trim();
         const due_at = fromLocalInput(document.getElementById("c-fu-when")?.value);
         if (!title || !due_at) return toast("Give the follow-up a title and a time, or untick it.", "error");
@@ -1290,17 +1443,11 @@ function wireActivityTab(container, meister) {
       const btn = form.querySelector("button[type=submit]");
       btn.disabled = true;
       try {
-        if (editId) {
-          await updateInteraction(editId, payload, currentProfile.full_name);
-          uiState.editingNoteId = null;
-          toast("Note updated");
-        } else {
-          const created = await addInteraction(meister.id, payload, currentProfile.full_name, currentProfile.id);
-          if (fu) await addFollowUp({ meister_id: meister.id, interaction_id: created.id, ...fu }, currentProfile.full_name, currentProfile.id);
-          uiState.composerOpen = false;
-          uiState.composerWithFollowUp = false;
-          toast(`${payload.method === "Other" ? "Note" : payload.method} logged${fu ? " + follow-up set" : ""}`);
-        }
+        const created = await addInteraction(meister.id, payload, currentProfile.full_name, currentProfile.id);
+        if (fu) await addFollowUp({ meister_id: meister.id, interaction_id: created.id, ...fu }, currentProfile.full_name, currentProfile.id);
+        uiState.composerOpen = false;
+        uiState.composerWithFollowUp = false;
+        toast(`${payload.method === "Other" ? "Note" : payload.method} logged${fu ? " + follow-up set" : ""}`);
         clearDrafts(prefix);
         clearDrafts("c-fu-");
         render();
@@ -1311,16 +1458,9 @@ function wireActivityTab(container, meister) {
     });
   });
 
-  document.querySelectorAll(".edit-note-btn").forEach((btn) =>
-    btn.addEventListener("click", () => {
-      uiState.editingNoteId = btn.dataset.id;
-      uiState.composerOpen = false;
-      render();
-    })
-  );
   document.querySelectorAll(".delete-note-btn").forEach((btn) =>
     btn.addEventListener("click", async () => {
-      if (!confirm("Delete this note and its comments? This cannot be undone.")) return;
+      if (!confirm("Delete this logged entry and its comments? This cannot be undone.")) return;
       try {
         await deleteInteraction(btn.dataset.id);
         toast("Note deleted");

@@ -19,13 +19,64 @@ export async function getCurrentProfile() {
   if (!session) return null;
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, full_name, email, is_admin")
+    .select("id, full_name, email, is_admin, concierge, notify_comments, notify_activity")
     .eq("id", session.user.id)
     .single();
   if (error) {
-    return { id: session.user.id, full_name: session.user.email, email: session.user.email, is_admin: false };
+    return { id: session.user.id, full_name: session.user.email, email: session.user.email, is_admin: false, concierge: null, notify_comments: true, notify_activity: true };
   }
   return data;
+}
+
+export async function setNotificationPrefs({ notify_comments, notify_activity }) {
+  const { error } = await supabase.rpc("set_notification_prefs", { p_comments: notify_comments, p_activity: notify_activity });
+  if (error) throw error;
+}
+
+// ---------- notifications ----------
+export async function listNotifications(userId, limit = 100) {
+  const { data, error } = await supabase
+    .from("notifications")
+    .select("*, meisters(name)")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data;
+}
+
+export async function listUnreadNotifications(userId) {
+  const { data, error } = await supabase
+    .from("notifications")
+    .select("id, meister_id")
+    .eq("user_id", userId)
+    .is("read_at", null);
+  if (error) return [];
+  return data;
+}
+
+export async function markNotificationRead(id) {
+  const { error } = await supabase.from("notifications").update({ read_at: new Date().toISOString() }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function markAllNotificationsRead(userId) {
+  const { error } = await supabase
+    .from("notifications")
+    .update({ read_at: new Date().toISOString() })
+    .eq("user_id", userId)
+    .is("read_at", null);
+  if (error) throw error;
+}
+
+export async function markMeisterNotificationsRead(userId, meisterId) {
+  const { error } = await supabase
+    .from("notifications")
+    .update({ read_at: new Date().toISOString() })
+    .eq("user_id", userId)
+    .eq("meister_id", meisterId)
+    .is("read_at", null);
+  if (error) throw error;
 }
 
 export async function listTeam() {
@@ -95,6 +146,17 @@ export async function listMyFollowUps(userId) {
     .select("*, meisters(name)")
     .eq("user_id", userId)
     .order("due_at", { ascending: true });
+  if (error) throw error;
+  return data;
+}
+
+export async function listRecentDoneFollowUps(limit = 300) {
+  const { data, error } = await supabase
+    .from("follow_ups")
+    .select("*, meisters(name, concierge)")
+    .not("done_at", "is", null)
+    .order("done_at", { ascending: false })
+    .limit(limit);
   if (error) throw error;
   return data;
 }
@@ -232,17 +294,6 @@ export async function addInteraction(meisterId, { method, note, occurred_at }, a
   return data;
 }
 
-export async function updateInteraction(id, { method, note, occurred_at }, editorName) {
-  const { data, error } = await supabase
-    .from("interactions")
-    .update({ method, note, occurred_at, edited_at: new Date().toISOString(), edited_by_name: editorName })
-    .eq("id", id)
-    .select()
-    .single();
-  if (error) throw error;
-  return data;
-}
-
 export async function deleteInteraction(id) {
   const { error } = await supabase.from("interactions").delete().eq("id", id);
   if (error) throw error;
@@ -300,6 +351,7 @@ export function subscribeToChanges(onChange) {
     .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "follow_ups" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "interaction_comments" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "notifications" }, onChange)
     .subscribe();
   return () => supabase.removeChannel(channel);
 }
