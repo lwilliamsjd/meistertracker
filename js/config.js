@@ -6,7 +6,7 @@
 // controlled by Row Level Security + requiring a login, not by
 // hiding this key.
 
-export const SUPABASE_URL = "https://supabase.com/dashboard/project/wwkbwlqmtaoeqyumsfia";
+export const SUPABASE_URL = "https://wwkbwlqmtaoeqyumsfia.supabase.co";
 export const SUPABASE_ANON_KEY = "sb_publishable_yld8-4WrpcE8BL7LlVkf8Q_aaztfz2V";
 
 export const APP_NAME = "Meister Tracker";
