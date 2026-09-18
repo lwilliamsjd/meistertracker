@@ -8,23 +8,27 @@ A private CRM for tracking Meister conversations (phone, text, email) during the
 - Status counts across the top (Total, New, Contacted, Engaged, Sold, Not Interested, Overdue). Click one to filter.
 - Search by name, dealership, city, phone, email, or concierge. Filter by status and by concierge (Freddie / Logan / Unassigned).
 - Sortable columns. "Last Contact" is the most recent logged conversation, separate from "Updated" (profile edits).
-- Follow-up column flags Overdue (red) and Today (amber).
+- "My Follow-Up" column shows your own next follow-up for each Meister, flagged Overdue (red) or Today (amber).
 
 **Meister page**
-- Left card: avatar, dealership, status, assigned concierge, Call / Text / Email / Note shortcuts, and contact details. The shortcuts only open the log box; nothing dials, texts, or emails.
+- Left card: avatar, job title, dealership, status, assigned concierge, Call / Text / Email / Note shortcuts, your next follow-up, and contact details. The shortcuts only open the log box; nothing dials, texts, or emails.
 - **Activity tab**: every logged conversation grouped by month with real timestamps. Filter by method. Log with a date/time (defaults to now, can be backdated). Edit any note; edits are marked.
+  - **Follow-ups**: tick "Set a follow-up reminder" while logging (or use the Follow-up button) to create a titled reminder with a date and time. Each one has an **Outlook** button that opens a pre-filled Outlook 365 event, plus an .ics download for desktop Outlook. Mark done, edit, or delete your own.
+  - **Comments**: reply under any logged activity. Teammates can add what they know; authors can edit their own comments.
 - **Guests tab**: people this Meister referred or sold a vehicle to, with vehicle, purchase date, and notes. Editable.
-- **Edit Profile tab**: all fields including Next Follow-Up date, Concierge, address, dealership website. Phone auto-formats to (xxx) xxx-xxxx.
+- **Edit Profile tab**: name, job title, status, concierge, contact details, address, dealership website. Phone auto-formats to (xxx) xxx-xxxx.
 
-**Activity Log**: team-wide feed of every conversation, grouped by day. Filter by team member, method, or search.
+**Activity Log**: team-wide feed of every conversation, grouped by day, with comment counts. Filter by team member, method, or search.
+
+**Follow-Ups**: your own pending reminders across every Meister, grouped Overdue / Today / Tomorrow / This week / Later, with a badge in the nav for anything due today or overdue. Completed ones are one click away.
 
 **Account**: change your own password and display name inside the app (no email links, so it works behind the company filter). Shows the team list.
 
 **Live sync**: a teammate's changes appear on your screen without refreshing, and never wipe out anything you're typing.
 
-**Export to Excel**: three tabs (Meisters, Interactions, Guests) with real date cells that sort and filter in Excel.
+**Export to Excel**: five tabs (Meisters, Interactions, Comments, Follow-Ups, Guests) with real date cells that sort and filter in Excel.
 
-**Permissions**: everyone signed in can view, add, and edit everything. Only admins can delete. Admin is set per user in the database (see setup).
+**Permissions**: everyone signed in can view, add, and edit everything. Only admins can delete records. Exceptions that make sense for personal items: you can always edit/delete/complete your own follow-ups, and only you (or an admin) can edit your own comments. Admin is set per user in the database (see setup).
 
 ---
 
@@ -110,10 +114,69 @@ create policy "guests_insert" on guests for insert with check (auth.role() = 'au
 create policy "guests_update" on guests for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "guests_delete_admin" on guests for delete using (public.is_admin());
 
+-- job title
+alter table meisters add column if not exists job_title text;
+
+-- follow-ups (personal reminders)
+create table if not exists follow_ups (
+  id uuid primary key default gen_random_uuid(),
+  meister_id uuid not null references meisters(id) on delete cascade,
+  interaction_id uuid references interactions(id) on delete set null,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  user_name text,
+  title text not null,
+  due_at timestamptz not null,
+  done_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists follow_ups_user_due_idx on follow_ups (user_id, due_at);
+create index if not exists follow_ups_meister_idx on follow_ups (meister_id);
+create index if not exists follow_ups_interaction_idx on follow_ups (interaction_id);
+alter table follow_ups enable row level security;
+drop policy if exists "follow_ups_select" on follow_ups;
+drop policy if exists "follow_ups_insert" on follow_ups;
+drop policy if exists "follow_ups_update" on follow_ups;
+drop policy if exists "follow_ups_delete" on follow_ups;
+create policy "follow_ups_select" on follow_ups for select using (auth.role() = 'authenticated');
+create policy "follow_ups_insert" on follow_ups for insert with check (auth.role() = 'authenticated' and user_id = auth.uid());
+create policy "follow_ups_update" on follow_ups for update using (user_id = auth.uid() or public.is_admin()) with check (user_id = auth.uid() or public.is_admin());
+create policy "follow_ups_delete" on follow_ups for delete using (user_id = auth.uid() or public.is_admin());
+
+-- comments on activities
+create table if not exists interaction_comments (
+  id uuid primary key default gen_random_uuid(),
+  interaction_id uuid not null references interactions(id) on delete cascade,
+  body text not null,
+  created_by uuid references auth.users(id),
+  created_by_name text,
+  edited_at timestamptz,
+  created_at timestamptz not null default now()
+);
+create index if not exists interaction_comments_interaction_idx on interaction_comments (interaction_id);
+alter table interaction_comments enable row level security;
+drop policy if exists "comments_select" on interaction_comments;
+drop policy if exists "comments_insert" on interaction_comments;
+drop policy if exists "comments_update" on interaction_comments;
+drop policy if exists "comments_delete_admin" on interaction_comments;
+create policy "comments_select" on interaction_comments for select using (auth.role() = 'authenticated');
+create policy "comments_insert" on interaction_comments for insert with check (auth.role() = 'authenticated' and created_by = auth.uid());
+create policy "comments_update" on interaction_comments for update using (created_by = auth.uid() or public.is_admin()) with check (created_by = auth.uid() or public.is_admin());
+create policy "comments_delete_admin" on interaction_comments for delete using (public.is_admin());
+
+-- convert any old "Next Follow-Up" dates into follow-up events (9:00 AM Central, owned by whoever created the Meister)
+insert into follow_ups (meister_id, user_id, user_name, title, due_at)
+select m.id, m.created_by, m.created_by_name, 'Follow up', (m.next_follow_up + time '09:00') at time zone 'America/Chicago'
+from meisters m
+where m.next_follow_up is not null and m.created_by is not null
+  and not exists (select 1 from follow_ups f where f.meister_id = m.id and f.user_id = m.created_by and f.title = 'Follow up');
+update meisters set next_follow_up = null where next_follow_up is not null;
+
 -- live sync (wrapped so "already member" never errors)
 do $$ begin alter publication supabase_realtime add table meisters; exception when duplicate_object then null; end $$;
 do $$ begin alter publication supabase_realtime add table interactions; exception when duplicate_object then null; end $$;
 do $$ begin alter publication supabase_realtime add table guests; exception when duplicate_object then null; end $$;
+do $$ begin alter publication supabase_realtime add table follow_ups; exception when duplicate_object then null; end $$;
+do $$ begin alter publication supabase_realtime add table interaction_comments; exception when duplicate_object then null; end $$;
 ```
 
 Then make yourself admin (swap in your login email) — until you do, **nobody** can delete anything:

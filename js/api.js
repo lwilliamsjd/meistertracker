@@ -51,26 +51,132 @@ export async function listMeisters() {
   return data;
 }
 
-// Lightweight per-meister rollups for the dashboard (last contact, counts).
-export async function listMeisterRollups() {
-  const [ints, gs] = await Promise.all([
+// Lightweight per-meister rollups for the dashboard (last contact, counts,
+// and the signed-in user's own next pending follow-up).
+export async function listMeisterRollups(userId) {
+  const [ints, gs, fus] = await Promise.all([
     supabase.from("interactions").select("meister_id, occurred_at"),
     supabase.from("guests").select("meister_id"),
+    supabase.from("follow_ups").select("id, meister_id, title, due_at").eq("user_id", userId).is("done_at", null),
   ]);
   if (ints.error) throw ints.error;
   if (gs.error) throw gs.error;
+  if (fus.error) throw fus.error;
 
+  const blank = () => ({ last_contact: null, interaction_count: 0, guest_count: 0, my_follow_up: null });
   const rollup = {};
   for (const i of ints.data) {
-    const r = (rollup[i.meister_id] ||= { last_contact: null, interaction_count: 0, guest_count: 0 });
+    const r = (rollup[i.meister_id] ||= blank());
     r.interaction_count += 1;
     if (!r.last_contact || i.occurred_at > r.last_contact) r.last_contact = i.occurred_at;
   }
-  for (const g of gs.data) {
-    const r = (rollup[g.meister_id] ||= { last_contact: null, interaction_count: 0, guest_count: 0 });
-    r.guest_count += 1;
+  for (const g of gs.data) (rollup[g.meister_id] ||= blank()).guest_count += 1;
+  for (const f of fus.data) {
+    const r = (rollup[f.meister_id] ||= blank());
+    if (!r.my_follow_up || f.due_at < r.my_follow_up.due_at) r.my_follow_up = f;
   }
   return rollup;
+}
+
+// ---------- follow-ups ----------
+export async function listFollowUpsForMeister(meisterId) {
+  const { data, error } = await supabase
+    .from("follow_ups")
+    .select("*")
+    .eq("meister_id", meisterId)
+    .order("due_at", { ascending: true });
+  if (error) throw error;
+  return data;
+}
+
+export async function listMyFollowUps(userId) {
+  const { data, error } = await supabase
+    .from("follow_ups")
+    .select("*, meisters(name)")
+    .eq("user_id", userId)
+    .order("due_at", { ascending: true });
+  if (error) throw error;
+  return data;
+}
+
+export async function countMyDueFollowUps(userId) {
+  const endOfToday = new Date();
+  endOfToday.setHours(23, 59, 59, 999);
+  const { count, error } = await supabase
+    .from("follow_ups")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .is("done_at", null)
+    .lte("due_at", endOfToday.toISOString());
+  if (error) return 0;
+  return count || 0;
+}
+
+export async function addFollowUp({ meister_id, interaction_id = null, title, due_at }, userName, userId) {
+  const { data, error } = await supabase
+    .from("follow_ups")
+    .insert([{ meister_id, interaction_id, title, due_at, user_id: userId, user_name: userName }])
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateFollowUp(id, fields) {
+  const { data, error } = await supabase.from("follow_ups").update(fields).eq("id", id).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteFollowUp(id) {
+  const { error } = await supabase.from("follow_ups").delete().eq("id", id);
+  if (error) throw error;
+}
+
+// ---------- comments ----------
+export async function listCommentsForInteractions(interactionIds) {
+  if (!interactionIds.length) return [];
+  const { data, error } = await supabase
+    .from("interaction_comments")
+    .select("*")
+    .in("interaction_id", interactionIds)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return data;
+}
+
+export async function listCommentCounts() {
+  const { data, error } = await supabase.from("interaction_comments").select("interaction_id");
+  if (error) throw error;
+  const counts = {};
+  for (const c of data) counts[c.interaction_id] = (counts[c.interaction_id] || 0) + 1;
+  return counts;
+}
+
+export async function addComment(interactionId, body, authorName, authorId) {
+  const { data, error } = await supabase
+    .from("interaction_comments")
+    .insert([{ interaction_id: interactionId, body, created_by: authorId, created_by_name: authorName }])
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateComment(id, body) {
+  const { data, error } = await supabase
+    .from("interaction_comments")
+    .update({ body, edited_at: new Date().toISOString() })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteComment(id) {
+  const { error } = await supabase.from("interaction_comments").delete().eq("id", id);
+  if (error) throw error;
 }
 
 export async function getMeister(id) {
@@ -192,19 +298,21 @@ export function subscribeToChanges(onChange) {
     .on("postgres_changes", { event: "*", schema: "public", table: "meisters" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "interactions" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "guests" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "follow_ups" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "interaction_comments" }, onChange)
     .subscribe();
   return () => supabase.removeChannel(channel);
 }
 
 // ---------- export helper ----------
 export async function fetchAllForExport() {
-  const [meisters, interactions, guests] = await Promise.all([
+  const [meisters, interactions, guests, followUps, comments] = await Promise.all([
     supabase.from("meisters").select("*").order("name"),
     supabase.from("interactions").select("*, meisters(name)").order("occurred_at", { ascending: false }),
     supabase.from("guests").select("*, meisters(name)").order("purchase_date", { ascending: false, nullsFirst: false }),
+    supabase.from("follow_ups").select("*, meisters(name)").order("due_at", { ascending: true }),
+    supabase.from("interaction_comments").select("*").order("created_at", { ascending: true }),
   ]);
-  if (meisters.error) throw meisters.error;
-  if (interactions.error) throw interactions.error;
-  if (guests.error) throw guests.error;
-  return { meisters: meisters.data, interactions: interactions.data, guests: guests.data };
+  for (const r of [meisters, interactions, guests, followUps, comments]) if (r.error) throw r.error;
+  return { meisters: meisters.data, interactions: interactions.data, guests: guests.data, followUps: followUps.data, comments: comments.data };
 }

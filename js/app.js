@@ -21,6 +21,17 @@ import {
   addGuest,
   updateGuest,
   deleteGuest,
+  listFollowUpsForMeister,
+  listMyFollowUps,
+  countMyDueFollowUps,
+  addFollowUp,
+  updateFollowUp,
+  deleteFollowUp,
+  listCommentsForInteractions,
+  listCommentCounts,
+  addComment,
+  updateComment,
+  deleteComment,
   listRecentActivity,
   subscribeToChanges,
 } from "./api.js";
@@ -29,6 +40,7 @@ import { exportToExcel } from "./export.js";
 const app = document.getElementById("app");
 let currentProfile = null;
 let unsubscribeRealtime = null;
+let myDueCount = 0;
 
 const STATUSES = ["New", "Contacted", "Engaged", "Sold", "Not Interested"];
 const CONCIERGES = ["Freddie", "Logan"];
@@ -50,15 +62,20 @@ const I = {
   trash: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>`,
   download: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>`,
   calendar: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>`,
+  calendarPlus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M12 14v4M10 16h4"/></svg>`,
   link: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><path d="M15 3h6v6M10 14 21 3"/></svg>`,
   back: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>`,
   sort: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7 15 5 5 5-5M7 9l5-5 5 5"/></svg>`,
   up: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m18 15-6-6-6 6"/></svg>`,
   down: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>`,
   check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`,
+  circle: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>`,
   alert: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>`,
   users: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></svg>`,
   lock: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`,
+  reply: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 17 4 12l5-5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>`,
+  bell: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>`,
+  briefcase: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></svg>`,
 };
 
 const METHOD_ICON = { Phone: I.phone, Text: I.text, Email: I.mail, "In Person": I.person, Other: I.other };
@@ -72,30 +89,32 @@ const QUICK_ACTIONS = [
 // ============================================================
 // STATE
 // ============================================================
-// Per-meister-page UI state (reset when the route key changes)
 let uiState = freshUiState("activity");
 function freshUiState(tab) {
   return {
     activeTab: tab,
     composerOpen: false,
     composerMethod: "Phone",
+    composerWithFollowUp: false,
     editingNoteId: null,
     methodFilter: "",
     guestFormOpen: false,
     editingGuestId: null,
-    focusComposer: false,
+    fuFormOpen: false,
+    editingFuId: null,
+    replyingTo: null,
+    editingCommentId: null,
+    focusId: null,
   };
 }
 
-// Dashboard filters/sort survive live re-renders
 const dashState = { q: "", status: "", concierge: "", sort: "updated", dir: "desc" };
-// Activity-log filters
 const actState = { q: "", method: "", person: "" };
+const fuPageState = { showDone: false, editingId: null };
 
 // Draft preservation: anything typed into a [data-draft] field survives a
-// re-render (live update from a teammate, tab switch, filter click…).
-// Only DIRTY fields are captured, so fresh server values still win when
-// the user hasn't touched a field.
+// re-render. Only DIRTY fields are captured, so fresh server values still
+// win when the user hasn't touched a field.
 let drafts = {};
 let draftsRouteKey = null;
 
@@ -108,8 +127,9 @@ function captureDrafts() {
     } else {
       dirty = el.value !== el.defaultValue;
     }
-    if (dirty) drafts[el.id] = el.value;
-    else delete drafts[el.id];
+    // Once a field has a draft it stays sticky (re-rendering it makes it look
+    // "clean" again), otherwise only capture fields the user actually changed.
+    if (dirty || el.id in drafts) drafts[el.id] = el.value;
   });
 }
 function dv(id, fallback = "") {
@@ -120,13 +140,12 @@ function clearDrafts(prefix) {
 }
 
 // ============================================================
-// ROUTER  (hash-based — works with GitHub Pages + browser back/forward)
+// ROUTER
 // ============================================================
 window.addEventListener("hashchange", () => render());
 window.addEventListener("DOMContentLoaded", init);
 
 async function init() {
-  // Toasts live outside #app so re-renders don't wipe them mid-fade.
   if (!document.getElementById("toast-root")) {
     const tr = document.createElement("div");
     tr.id = "toast-root";
@@ -141,8 +160,6 @@ async function init() {
 
   supabase.auth.onAuthStateChange(async (event) => {
     if (event === "SIGNED_IN") {
-      // Supabase re-fires SIGNED_IN on tab focus / token refresh even when
-      // already logged in — only treat it as a real login if we weren't.
       const alreadySignedIn = !!currentProfile;
       currentProfile = await getCurrentProfile();
       if (!alreadySignedIn) {
@@ -161,8 +178,7 @@ function startRealtime() {
   if (unsubscribeRealtime) unsubscribeRealtime();
   unsubscribeRealtime = subscribeToChanges(() => {
     const route = parseHash();
-    if (["dashboard", "activity"].includes(route.name)) render({ live: true });
-    if (route.name === "meister" && route.mode === "view") render({ live: true });
+    if (route.name !== "login" && !(route.name === "meister" && route.mode === "new")) render({ live: true });
   });
 }
 
@@ -177,6 +193,7 @@ function parseHash() {
   if (parts[0] === "" || parts[0] === "dashboard") return { name: "dashboard", key: "dashboard" };
   if (parts[0] === "login") return { name: "login", key: "login" };
   if (parts[0] === "activity") return { name: "activity", key: "activity" };
+  if (parts[0] === "followups") return { name: "followups", key: "followups" };
   if (parts[0] === "account") return { name: "account", key: "account" };
   if (parts[0] === "meister" && parts[1] === "new") return { name: "meister", mode: "new", key: "meister:new" };
   if (parts[0] === "meister" && parts[1]) return { name: "meister", mode: "view", id: parts[1], key: `meister:${parts[1]}` };
@@ -184,15 +201,15 @@ function parseHash() {
 }
 
 // ============================================================
-// RENDER  (guarded so overlapping renders can't clobber each other)
+// RENDER
 // ============================================================
 let renderSeq = 0;
+let lastPaintedKey = null;
 
-async function render(opts = {}) {
+async function render() {
   const seq = ++renderSeq;
   const route = parseHash();
 
-  // Drafts belong to one page. Leaving the page discards them.
   if (route.key !== draftsRouteKey) {
     drafts = {};
     draftsRouteKey = route.key;
@@ -206,25 +223,24 @@ async function render(opts = {}) {
 
   if (!session && route.name !== "login") return void (window.location.hash = "#/login");
   if (session && route.name === "login") return void (window.location.hash = "#/dashboard");
-
   if (route.name === "login") return renderLogin();
 
-  // First paint of a page shows a loading shell; live refreshes of the same
-  // page fetch first and swap the DOM once, so nothing flashes.
   if (route.key !== lastPaintedKey || !app.querySelector(".shell")) {
     renderShell(route, (c) => (c.innerHTML = `<div class="loading">Loading…</div>`));
     lastPaintedKey = route.key;
   }
 
+  if (currentProfile) myDueCount = await countMyDueFollowUps(currentProfile.id);
+  if (seq !== renderSeq) return;
+
   if (route.name === "dashboard") return renderDashboard(route, seq);
   if (route.name === "activity") return renderActivity(route, seq);
+  if (route.name === "followups") return renderFollowUpsPage(route, seq);
   if (route.name === "account") return renderAccount(route, seq);
   if (route.name === "meister") return renderMeister(route, seq);
 }
-let lastPaintedKey = null;
 
 function renderShell(route, contentFn) {
-  // Grab anything typed during the fetch window so a live refresh never eats keystrokes.
   if (route.key === draftsRouteKey) captureDrafts();
   app.innerHTML = `
     <div class="shell">
@@ -233,6 +249,7 @@ function renderShell(route, contentFn) {
         <nav class="nav">
           <a href="#/dashboard" class="${route.name === "dashboard" || route.name === "meister" ? "active" : ""}">Meisters</a>
           <a href="#/activity" class="${route.name === "activity" ? "active" : ""}">Activity Log</a>
+          <a href="#/followups" class="${route.name === "followups" ? "active" : ""}">Follow-Ups${myDueCount ? `<span class="nav-badge">${myDueCount}</span>` : ""}</a>
         </nav>
         <div class="user-area">
           <a href="#/account" class="user-chip ${route.name === "account" ? "active" : ""}" title="Account settings">
@@ -248,6 +265,14 @@ function renderShell(route, contentFn) {
   `;
   document.getElementById("logout-btn").addEventListener("click", () => signOut());
   contentFn(document.getElementById("main-content"));
+}
+
+function paint(route, seq, fn) {
+  if (seq !== renderSeq) return false;
+  let container;
+  renderShell(route, (c) => (container = c));
+  fn(container);
+  return true;
 }
 
 // ============================================================
@@ -291,22 +316,21 @@ function renderLogin() {
 async function renderDashboard(route, seq) {
   let meisters, rollups;
   try {
-    [meisters, rollups] = await Promise.all([listMeisters(), listMeisterRollups()]);
+    [meisters, rollups] = await Promise.all([listMeisters(), listMeisterRollups(currentProfile.id)]);
   } catch (err) {
-    if (seq !== renderSeq) return;
-    return renderShell(route, (c) => (c.innerHTML = `<div class="empty-state">Couldn't load meisters: ${escapeHtml(err.message)}</div>`));
+    paint(route, seq, (c) => (c.innerHTML = `<div class="empty-state">Couldn't load meisters: ${escapeHtml(err.message)}</div>`));
+    return;
   }
-  if (seq !== renderSeq) return;
   let container;
-  renderShell(route, (c) => (container = c));
+  if (!paint(route, seq, (c) => (container = c))) return;
 
-  meisters.forEach((m) => Object.assign(m, rollups[m.id] || { last_contact: null, interaction_count: 0, guest_count: 0 }));
+  meisters.forEach((m) => Object.assign(m, rollups[m.id] || { last_contact: null, interaction_count: 0, guest_count: 0, my_follow_up: null }));
 
   const counts = { total: meisters.length, overdue: 0 };
   STATUSES.forEach((s) => (counts[s] = 0));
   meisters.forEach((m) => {
     counts[m.status] = (counts[m.status] || 0) + 1;
-    if (followUpState(m.next_follow_up) === "overdue") counts.overdue++;
+    if (m.my_follow_up && followUpState(m.my_follow_up.due_at) === "overdue") counts.overdue++;
   });
 
   container.innerHTML = `
@@ -323,15 +347,15 @@ async function renderDashboard(route, seq) {
       ${STATUSES.map(
         (s) => `<button class="kpi ${dashState.status === s ? "active" : ""}" data-status="${s}"><span class="kpi-num st-${slug(s)}">${counts[s]}</span><span class="kpi-label">${s}</span></button>`
       ).join("")}
-      <button class="kpi kpi-alert ${dashState.status === "__overdue" ? "active" : ""}" data-status="__overdue"><span class="kpi-num">${counts.overdue}</span><span class="kpi-label">Overdue</span></button>
+      <button class="kpi kpi-alert ${dashState.status === "__overdue" ? "active" : ""}" data-status="__overdue"><span class="kpi-num">${counts.overdue}</span><span class="kpi-label">My overdue</span></button>
     </div>
 
     <div class="filters">
-      <div class="search-box">${I.search}<input id="search-input" type="text" placeholder="Search name, dealership, city, phone, email…" value="${escapeAttr(dashState.q)}" /></div>
+      <div class="search-box">${I.search}<input id="search-input" type="text" placeholder="Search name, title, dealership, city, phone, email…" value="${escapeAttr(dashState.q)}" /></div>
       <select id="status-filter">
         <option value="">All Statuses</option>
         ${STATUSES.map((s) => `<option ${dashState.status === s ? "selected" : ""}>${s}</option>`).join("")}
-        <option value="__overdue" ${dashState.status === "__overdue" ? "selected" : ""}>Overdue follow-ups</option>
+        <option value="__overdue" ${dashState.status === "__overdue" ? "selected" : ""}>My overdue follow-ups</option>
       </select>
       <select id="concierge-filter">
         <option value="">All Concierges</option>
@@ -348,7 +372,7 @@ async function renderDashboard(route, seq) {
             ${th("dealership", "Dealership")}
             ${th("concierge", "Concierge")}
             ${th("status", "Status")}
-            ${th("follow_up", "Follow-Up")}
+            ${th("follow_up", "My Follow-Up")}
             ${th("last_contact", "Last Contact")}
             ${th("updated", "Updated")}
           </tr>
@@ -364,7 +388,7 @@ async function renderDashboard(route, seq) {
     const btn = e.currentTarget;
     btn.disabled = true;
     try {
-      await exportToExcel();
+      await exportToExcel(currentProfile.id);
       toast("Export downloaded");
     } catch (err) {
       toast("Export failed: " + err.message, "error");
@@ -420,10 +444,13 @@ function drawMeisterRows(meisters) {
   const q = dashState.q.toLowerCase().trim();
   const filtered = meisters.filter((m) => {
     const matchesQuery =
-      !q || [m.name, m.dealership, m.city, m.phone, m.email, m.concierge].some((f) => (f || "").toLowerCase().includes(q));
+      !q ||
+      [m.name, m.job_title, m.dealership, m.city, m.phone, m.email, m.concierge].some((f) => (f || "").toLowerCase().includes(q));
     const matchesStatus =
       !dashState.status ||
-      (dashState.status === "__overdue" ? followUpState(m.next_follow_up) === "overdue" : m.status === dashState.status);
+      (dashState.status === "__overdue"
+        ? m.my_follow_up && followUpState(m.my_follow_up.due_at) === "overdue"
+        : m.status === dashState.status);
     const matchesConcierge =
       !dashState.concierge || (dashState.concierge === "__none" ? !m.concierge : m.concierge === dashState.concierge);
     return matchesQuery && matchesStatus && matchesConcierge;
@@ -435,13 +462,12 @@ function drawMeisterRows(meisters) {
     dealership: (m) => (m.dealership || "").toLowerCase(),
     concierge: (m) => (m.concierge || "").toLowerCase(),
     status: (m) => STATUSES.indexOf(m.status),
-    follow_up: (m) => m.next_follow_up || "",
+    follow_up: (m) => m.my_follow_up?.due_at || "",
     last_contact: (m) => m.last_contact || "",
     updated: (m) => m.updated_at || "",
   }[dashState.sort];
   filtered.sort((a, b) => {
     const ka = keyFn(a), kb = keyFn(b);
-    // empty values always sink to the bottom regardless of direction
     if (ka === "" && kb !== "") return 1;
     if (kb === "" && ka !== "") return -1;
     return ka < kb ? -dir : ka > kb ? dir : 0;
@@ -456,12 +482,12 @@ function drawMeisterRows(meisters) {
       <tr class="clickable-row" data-id="${m.id}">
         <td class="cell-name">
           <div>${escapeHtml(m.name)}</div>
-          <div class="muted cell-sub">${escapeHtml(formatPhone(m.phone) || m.email || "")}</div>
+          <div class="muted cell-sub">${escapeHtml(m.job_title || formatPhone(m.phone) || m.email || "")}</div>
         </td>
         <td>${escapeHtml(m.dealership || "—")}${m.city ? `<div class="muted cell-sub">${escapeHtml([m.city, m.state].filter(Boolean).join(", "))}</div>` : ""}</td>
         <td>${escapeHtml(m.concierge || "—")}</td>
         <td><span class="status-pill status-${slug(m.status)}">${escapeHtml(m.status)}</span></td>
-        <td>${followUpChip(m.next_follow_up)}</td>
+        <td>${m.my_follow_up ? followUpChip(m.my_follow_up.due_at) + `<div class="muted cell-sub">${escapeHtml(m.my_follow_up.title)}</div>` : `<span class="muted">—</span>`}</td>
         <td>${m.last_contact ? `<div>${relativeTime(m.last_contact)}</div><div class="muted cell-sub">${m.interaction_count} logged</div>` : `<span class="muted">Never</span>`}</td>
         <td class="muted">${relativeTime(m.updated_at)}</td>
       </tr>`
@@ -477,16 +503,15 @@ function drawMeisterRows(meisters) {
 // ACTIVITY LOG (team-wide)
 // ============================================================
 async function renderActivity(route, seq) {
-  let activity;
+  let activity, commentCounts;
   try {
-    activity = await listRecentActivity(300);
+    [activity, commentCounts] = await Promise.all([listRecentActivity(300), listCommentCounts()]);
   } catch (err) {
-    if (seq !== renderSeq) return;
-    return renderShell(route, (c) => (c.innerHTML = `<div class="empty-state">Couldn't load activity: ${escapeHtml(err.message)}</div>`));
+    paint(route, seq, (c) => (c.innerHTML = `<div class="empty-state">Couldn't load activity: ${escapeHtml(err.message)}</div>`));
+    return;
   }
-  if (seq !== renderSeq) return;
   let container;
-  renderShell(route, (c) => (container = c));
+  if (!paint(route, seq, (c) => (container = c))) return;
 
   const people = [...new Set(activity.map((a) => a.created_by_name).filter(Boolean))].sort();
 
@@ -527,20 +552,22 @@ async function renderActivity(route, seq) {
         <div class="group-label">${escapeHtml(label)}</div>
         <div class="activity-feed">
           ${items
-            .map(
-              (a) => `
+            .map((a) => {
+              const n = commentCounts[a.id] || 0;
+              return `
             <div class="activity-item">
               <span class="method-badge method-${slug(a.method)}">${METHOD_ICON[a.method] || ""} ${escapeHtml(a.method)}</span>
               <div class="activity-body">
                 <div class="activity-top">
                   <a href="#/meister/${a.meister_id}" class="activity-meister">${escapeHtml(a.meisters?.name || "Unknown Meister")}</a>
                   <span class="muted">by ${escapeHtml(a.created_by_name || "someone")}</span>
+                  ${n ? `<a href="#/meister/${a.meister_id}" class="comment-count">${I.reply} ${n} ${n === 1 ? "comment" : "comments"}</a>` : ""}
                   <span class="muted activity-time">${fmtTime(a.occurred_at)}</span>
                 </div>
                 <div class="activity-note">${escapeHtml(a.note)}</div>
               </div>
-            </div>`
-            )
+            </div>`;
+            })
             .join("")}
         </div>`
       )
@@ -560,14 +587,238 @@ async function renderActivity(route, seq) {
 }
 
 // ============================================================
+// FOLLOW-UPS PAGE (mine only)
+// ============================================================
+async function renderFollowUpsPage(route, seq) {
+  let all;
+  try {
+    all = await listMyFollowUps(currentProfile.id);
+  } catch (err) {
+    paint(route, seq, (c) => (c.innerHTML = `<div class="empty-state">Couldn't load follow-ups: ${escapeHtml(err.message)}</div>`));
+    return;
+  }
+  let container;
+  if (!paint(route, seq, (c) => (container = c))) return;
+
+  const pending = all.filter((f) => !f.done_at);
+  const done = all.filter((f) => f.done_at).sort((a, b) => (a.done_at < b.done_at ? 1 : -1)).slice(0, 50);
+  const overdue = pending.filter((f) => followUpState(f.due_at) === "overdue");
+
+  container.innerHTML = `
+    <div class="page-header">
+      <div><h1>My Follow-Ups</h1><p class="muted">Only the follow-ups you've set, across every Meister.${overdue.length ? ` <span class="fu-overdue">${overdue.length} overdue.</span>` : ""}</p></div>
+      <div class="page-actions">
+        <button id="toggle-done-btn" class="btn btn-ghost">${fuPageState.showDone ? "Hide completed" : `Show completed (${done.length})`}</button>
+      </div>
+    </div>
+
+    ${
+      pending.length
+        ? groupBy(pending, (f) => fuGroupLabel(f.due_at))
+            .map(
+              ([label, items]) => `
+          <div class="group-label ${label === "Overdue" ? "fu-overdue" : ""}">${escapeHtml(label)}</div>
+          <div class="fu-list">${items.map((f) => (fuPageState.editingId === f.id ? fuFormHtml(f, f.meisters?.name) : fuRowHtml(f, f.meisters?.name, true))).join("")}</div>`
+            )
+            .join("")
+        : `<div class="empty-state">Nothing pending. Set a follow-up when you log an activity on a Meister, or from their Activity tab.</div>`
+    }
+
+    ${
+      fuPageState.showDone && done.length
+        ? `<div class="group-label" style="margin-top:28px">Completed</div>
+           <div class="fu-list">${done.map((f) => fuRowHtml(f, f.meisters?.name, true)).join("")}</div>`
+        : ""
+    }
+  `;
+
+  document.getElementById("toggle-done-btn").addEventListener("click", () => {
+    fuPageState.showDone = !fuPageState.showDone;
+    render();
+  });
+  wireFollowUpControls(container, {
+    onEdit: (id) => { fuPageState.editingId = id; render(); },
+    onCancel: () => { fuPageState.editingId = null; render(); },
+    afterSave: () => { fuPageState.editingId = null; },
+  });
+}
+
+function fuGroupLabel(iso) {
+  const s = followUpState(iso);
+  if (s === "overdue") return "Overdue";
+  if (s === "today") return "Today";
+  const d = new Date(iso);
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+  if (d.toDateString() === tomorrow.toDateString()) return "Tomorrow";
+  const week = new Date(); week.setDate(week.getDate() + 7);
+  if (d < week) return "This week";
+  return "Later";
+}
+
+// ---------- follow-up rows/forms (shared by Follow-Ups page and Meister page) ----------
+function canManageFu(f) {
+  return f.user_id === currentProfile.id || isAdmin();
+}
+
+function fuRowHtml(f, meisterName, showMeister) {
+  const st = f.done_at ? "done" : followUpState(f.due_at);
+  const mine = canManageFu(f);
+  return `
+    <div class="fu-row ${f.done_at ? "is-done" : ""}" data-id="${f.id}">
+      ${mine ? `<button class="fu-check ${f.done_at ? "on" : ""}" data-fu-toggle="${f.id}" title="${f.done_at ? "Mark not done" : "Mark done"}">${f.done_at ? I.check : ""}</button>` : `<span class="fu-check static"></span>`}
+      <div class="fu-body">
+        <div class="fu-title">${escapeHtml(f.title)}</div>
+        <div class="fu-meta">
+          <span class="fu-chip fu-${st}">${I.calendar} ${f.done_at ? "Done " + fmtDateTime(f.done_at) : fmtDateTime(f.due_at)}</span>
+          ${showMeister && meisterName ? `<a href="#/meister/${f.meister_id}" class="fu-meister">${escapeHtml(meisterName)}</a>` : ""}
+          ${!showMeister || f.user_id !== currentProfile.id ? `<span class="muted">${escapeHtml(f.user_name || "")}</span>` : ""}
+        </div>
+      </div>
+      <div class="fu-actions">
+        ${!f.done_at ? `<a class="btn btn-ghost btn-sm" target="_blank" rel="noopener" href="${escapeAttr(outlookLink(f, meisterName))}" title="Open a pre-filled Outlook event">${I.calendarPlus} Outlook</a>
+        <a class="icon-btn" download="${escapeAttr(slug(f.title) || "follow-up")}.ics" href="${escapeAttr(icsLink(f, meisterName))}" title="Download .ics for desktop Outlook">${I.download}</a>` : ""}
+        ${mine ? `<button class="icon-btn" data-fu-edit="${f.id}" title="Edit">${I.edit}</button>
+        <button class="icon-btn danger" data-fu-delete="${f.id}" title="Delete">${I.trash}</button>` : ""}
+      </div>
+    </div>`;
+}
+
+function fuFormHtml(existing, meisterName) {
+  const p = existing ? `fue-${existing.id}-` : "fu-";
+  const title = dv(`${p}title`, existing ? existing.title : "");
+  const when = dv(`${p}when`, toLocalInput(existing ? existing.due_at : defaultFollowUpTime()));
+  return `
+    <form class="composer fu-form" data-prefix="${p}" data-edit-id="${existing ? existing.id : ""}">
+      <div class="fu-form-grid">
+        <input id="${p}title" data-draft placeholder="Follow-up title, e.g. Call about allocation" value="${escapeAttr(title)}" required />
+        <input id="${p}when" data-draft type="datetime-local" value="${escapeAttr(when)}" required />
+      </div>
+      ${meisterName ? `<div class="muted" style="margin-top:6px">For ${escapeHtml(meisterName)}</div>` : ""}
+      <div class="composer-actions">
+        <button type="button" class="btn cancel-fu-btn">Cancel</button>
+        <button type="submit" class="btn btn-primary">${existing ? "Save changes" : "Set follow-up"}</button>
+      </div>
+    </form>`;
+}
+
+function wireFollowUpControls(container, { onEdit, onCancel, afterSave, meisterId }) {
+  container.querySelectorAll("[data-fu-toggle]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const row = b.closest(".fu-row");
+      const wasDone = row.classList.contains("is-done");
+      try {
+        await updateFollowUp(b.dataset.fuToggle, { done_at: wasDone ? null : new Date().toISOString() });
+        toast(wasDone ? "Marked not done" : "Follow-up done");
+        render();
+      } catch (err) {
+        toast("Couldn't update: " + err.message, "error");
+      }
+    })
+  );
+  container.querySelectorAll("[data-fu-edit]").forEach((b) => b.addEventListener("click", () => onEdit(b.dataset.fuEdit)));
+  container.querySelectorAll("[data-fu-delete]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm("Delete this follow-up?")) return;
+      try {
+        await deleteFollowUp(b.dataset.fuDelete);
+        toast("Follow-up deleted");
+        render();
+      } catch (err) {
+        toast("Couldn't delete: " + err.message, "error");
+      }
+    })
+  );
+  container.querySelectorAll(".fu-form").forEach((form) => {
+    const prefix = form.dataset.prefix;
+    const editId = form.dataset.editId;
+    form.querySelector(".cancel-fu-btn").addEventListener("click", () => {
+      clearDrafts(prefix);
+      onCancel(editId);
+    });
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const title = document.getElementById(`${prefix}title`).value.trim();
+      const due_at = fromLocalInput(document.getElementById(`${prefix}when`).value);
+      if (!title || !due_at) return;
+      const btn = form.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        if (editId) {
+          await updateFollowUp(editId, { title, due_at });
+          toast("Follow-up updated");
+        } else {
+          await addFollowUp({ meister_id: meisterId, title, due_at }, currentProfile.full_name, currentProfile.id);
+          toast("Follow-up set");
+        }
+        clearDrafts(prefix);
+        afterSave(editId);
+        render();
+      } catch (err) {
+        toast("Couldn't save: " + err.message, "error");
+        btn.disabled = false;
+      }
+    });
+  });
+}
+
+// ---------- calendar links ----------
+function crmLink(meisterId) {
+  return `${location.origin}${location.pathname}#/meister/${meisterId}`;
+}
+function outlookLink(f, meisterName) {
+  const start = new Date(f.due_at);
+  const end = new Date(start.getTime() + 30 * 60000);
+  const u = new URL("https://outlook.office.com/calendar/0/deeplink/compose");
+  u.searchParams.set("subject", `${f.title}${meisterName ? " — " + meisterName : ""}`);
+  u.searchParams.set("startdt", start.toISOString());
+  u.searchParams.set("enddt", end.toISOString());
+  u.searchParams.set("body", `GR GT CRM follow-up${meisterName ? " for " + meisterName : ""}\n${crmLink(f.meister_id)}`);
+  u.searchParams.set("path", "/calendar/action/compose");
+  u.searchParams.set("rru", "addevent");
+  return u.toString();
+}
+function icsLink(f, meisterName) {
+  const fmt = (d) => new Date(d).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const start = new Date(f.due_at);
+  const end = new Date(start.getTime() + 30 * 60000);
+  const esc = (s) => String(s).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
+  const ics = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//GR GT Concierge CRM//EN",
+    "BEGIN:VEVENT",
+    `UID:${f.id}@gr-gt-crm`,
+    `DTSTAMP:${fmt(new Date())}`,
+    `DTSTART:${fmt(start)}`,
+    `DTEND:${fmt(end)}`,
+    `SUMMARY:${esc(f.title + (meisterName ? " — " + meisterName : ""))}`,
+    `DESCRIPTION:${esc("GR GT CRM follow-up" + (meisterName ? " for " + meisterName : "") + "\n" + crmLink(f.meister_id))}`,
+    `URL:${crmLink(f.meister_id)}`,
+    "BEGIN:VALARM",
+    "TRIGGER:-PT15M",
+    "ACTION:DISPLAY",
+    `DESCRIPTION:${esc(f.title)}`,
+    "END:VALARM",
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ].join("\r\n");
+  return "data:text/calendar;charset=utf-8," + encodeURIComponent(ics);
+}
+function defaultFollowUpTime() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  d.setHours(9, 0, 0, 0);
+  return d.toISOString();
+}
+
+// ============================================================
 // ACCOUNT
 // ============================================================
 async function renderAccount(route, seq) {
   let team = [];
   try { team = await listTeam(); } catch { /* non-fatal */ }
-  if (seq !== renderSeq) return;
   let container;
-  renderShell(route, (c) => (container = c));
+  if (!paint(route, seq, (c) => (container = c))) return;
 
   container.innerHTML = `
     <div class="page-header"><div><h1>Account</h1><p class="muted">Signed in as ${escapeHtml(currentProfile.email || "")}</p></div></div>
@@ -589,7 +840,7 @@ async function renderAccount(route, seq) {
 
       <div class="form-card">
         <h3>${I.users} Team</h3>
-        <p class="muted">${currentProfile.is_admin ? "You're an admin: you can delete meisters, notes, and guests. Everyone else can add and edit." : "Only admins can delete records. Ask your team lead if something needs removing."}</p>
+        <p class="muted">${currentProfile.is_admin ? "You're an admin: you can delete meisters, notes, comments, and guests. Everyone else can add and edit." : "Only admins can delete records. Ask your team lead if something needs removing."}</p>
         <div class="team-list">
           ${team.map((t) => `<div class="team-row"><span class="user-avatar">${initials(t.full_name)}</span>${escapeHtml(t.full_name)}${t.id === currentProfile.id ? `<span class="muted"> (you)</span>` : ""}</div>`).join("") || `<div class="muted">No team members found.</div>`}
         </div>
@@ -632,21 +883,27 @@ async function renderAccount(route, seq) {
 // ============================================================
 async function renderMeister(route, seq) {
   const isNew = route.mode === "new";
-  let meister = null, interactions = [], guests = [];
+  let meister = null, interactions = [], guests = [], followUps = [], comments = [];
 
   if (!isNew) {
     try {
-      [meister, interactions, guests] = await Promise.all([getMeister(route.id), listInteractions(route.id), listGuests(route.id)]);
+      [meister, interactions, guests, followUps] = await Promise.all([
+        getMeister(route.id),
+        listInteractions(route.id),
+        listGuests(route.id),
+        listFollowUpsForMeister(route.id),
+      ]);
+      comments = await listCommentsForInteractions(interactions.map((i) => i.id));
     } catch {
-      if (seq !== renderSeq) return;
-      return renderShell(route, (c) => (c.innerHTML = `<div class="empty-state">Could not load this meister. They may have been removed.</div>`));
+      paint(route, seq, (c) => (c.innerHTML = `<div class="empty-state">Could not load this meister. They may have been removed.</div>`));
+      return;
     }
-    if (seq !== renderSeq) return;
   }
   let container;
-  renderShell(route, (c) => (container = c));
+  if (!paint(route, seq, (c) => (container = c))) return;
 
   const defaultConcierge = CONCIERGES.find((c) => (currentProfile?.full_name || "").toLowerCase().startsWith(c.toLowerCase())) || "";
+  const conciergeVal = dv("f-concierge", meister ? meister.concierge || "" : defaultConcierge);
 
   container.innerHTML = `
     <div class="page-header">
@@ -658,7 +915,7 @@ async function renderMeister(route, seq) {
     </div>
 
     <div class="${isNew ? "" : "meister-layout"}">
-      ${!isNew ? renderProfileSidebar(meister) : ""}
+      ${!isNew ? renderProfileSidebar(meister, followUps) : ""}
       <div>
         <div class="tabs" id="tabs">
           ${!isNew ? `<button class="tab-btn ${uiState.activeTab === "activity" ? "active" : ""}" data-tab="activity">Activity <span class="tab-count">${interactions.length}</span></button>` : ""}
@@ -670,16 +927,16 @@ async function renderMeister(route, seq) {
           <form id="profile-form" class="form-card">
             <div class="form-grid">
               <div class="form-field"><label>Name *</label><input id="f-name" data-draft required value="${escapeAttr(dv("f-name", meister?.name))}" /></div>
+              <div class="form-field"><label>Job Title</label><input id="f-job-title" data-draft placeholder="e.g. General Manager" value="${escapeAttr(dv("f-job-title", meister?.job_title))}" /></div>
               <div class="form-field"><label>Status</label>
                 <select id="f-status" data-draft>${STATUSES.map((s) => `<option ${dv("f-status", meister?.status || "New") === s ? "selected" : ""}>${s}</option>`).join("")}</select>
               </div>
               <div class="form-field"><label>Concierge</label>
                 <select id="f-concierge" data-draft>
-                  <option value="" ${dv("f-concierge", meister ? meister.concierge || "" : defaultConcierge) === "" ? "selected" : ""}>Unassigned</option>
-                  ${CONCIERGES.map((c) => `<option ${dv("f-concierge", meister ? meister.concierge || "" : defaultConcierge) === c ? "selected" : ""}>${c}</option>`).join("")}
+                  <option value="" ${conciergeVal === "" ? "selected" : ""}>Unassigned</option>
+                  ${CONCIERGES.map((c) => `<option ${conciergeVal === c ? "selected" : ""}>${c}</option>`).join("")}
                 </select>
               </div>
-              <div class="form-field"><label>Next Follow-Up</label><input id="f-follow-up" data-draft type="date" value="${escapeAttr(dv("f-follow-up", meister?.next_follow_up))}" /></div>
               <div class="form-field"><label>Phone</label><input id="f-phone" data-draft type="tel" placeholder="(xxx) xxx-xxxx" value="${escapeAttr(dv("f-phone", formatPhone(meister?.phone)))}" /></div>
               <div class="form-field"><label>Email</label><input id="f-email" data-draft type="email" value="${escapeAttr(dv("f-email", meister?.email))}" /></div>
               <div class="form-field"><label>Dealership</label><input id="f-dealership" data-draft value="${escapeAttr(dv("f-dealership", meister?.dealership))}" /></div>
@@ -701,7 +958,7 @@ async function renderMeister(route, seq) {
           </form>
         </div>
 
-        ${!isNew ? renderActivityTab(interactions) : ""}
+        ${!isNew ? renderActivityTab(meister, interactions, followUps, comments) : ""}
         ${!isNew ? renderGuestsTab(guests) : ""}
       </div>
     </div>
@@ -715,9 +972,9 @@ async function renderMeister(route, seq) {
     const g = (id) => document.getElementById(id).value.trim();
     const fields = {
       name: g("f-name"),
+      job_title: g("f-job-title"),
       status: g("f-status"),
       concierge: g("f-concierge") || null,
-      next_follow_up: g("f-follow-up") || null,
       phone: formatPhone(g("f-phone")),
       email: g("f-email"),
       dealership: g("f-dealership"),
@@ -750,7 +1007,7 @@ async function renderMeister(route, seq) {
 
   if (!isNew) {
     document.getElementById("delete-btn")?.addEventListener("click", async () => {
-      if (!confirm(`Delete ${meister.name}? This also deletes all their logged conversations and guests. This cannot be undone.`)) return;
+      if (!confirm(`Delete ${meister.name}? This also deletes all their logged conversations, comments, follow-ups, and guests. This cannot be undone.`)) return;
       try {
         await deleteMeister(meister.id);
         toast(`${meister.name} deleted`);
@@ -760,29 +1017,30 @@ async function renderMeister(route, seq) {
       }
     });
     wireQuickActions();
-    wireActivityTab(meister);
+    wireActivityTab(container, meister);
     wireGuestsTab(meister);
 
-    if (uiState.focusComposer) {
-      uiState.focusComposer = false;
-      const ta = document.getElementById("c-note");
-      if (ta) {
-        ta.focus();
-        ta.scrollIntoView({ block: "center", behavior: "smooth" });
+    if (uiState.focusId) {
+      const el = document.getElementById(uiState.focusId);
+      uiState.focusId = null;
+      if (el) {
+        el.focus();
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
       }
     }
   }
 }
 
 // ---------- sidebar ----------
-function renderProfileSidebar(m) {
+function renderProfileSidebar(m, followUps) {
   const cityLine = [m.city, [m.state, m.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
-  const fu = followUpState(m.next_follow_up);
+  const role = [m.job_title, m.dealership].filter(Boolean).join(" · ");
+  const mine = followUps.filter((f) => f.user_id === currentProfile.id && !f.done_at).sort((a, b) => (a.due_at < b.due_at ? -1 : 1))[0];
   return `
     <div class="card profile-sidebar">
       <div class="avatar">${initials(m.name)}</div>
       <div class="mname">${escapeHtml(m.name)}</div>
-      ${m.dealership ? `<div class="mrole">${escapeHtml(m.dealership)}</div>` : ""}
+      ${role ? `<div class="mrole">${escapeHtml(role)}</div>` : ""}
       <div class="pill-row">
         <span class="status-pill status-${slug(m.status)}">${escapeHtml(m.status)}</span>
         ${m.concierge ? `<span class="concierge-pill">${I.person} ${escapeHtml(m.concierge)}</span>` : ""}
@@ -793,7 +1051,7 @@ function renderProfileSidebar(m) {
       </div>
       <p class="muted qa-hint">Logs the conversation here. Doesn't dial, text, or send email.</p>
 
-      ${m.next_follow_up ? `<div class="field"><label>Next Follow-Up</label><div class="fu-${fu}">${I.calendar} ${fmtDate(m.next_follow_up)}${fu === "overdue" ? " · Overdue" : fu === "today" ? " · Today" : ""}</div></div>` : ""}
+      ${mine ? `<div class="field"><label>My next follow-up</label><div class="fu-${followUpState(mine.due_at)}">${I.calendar} ${fmtDateTime(mine.due_at)}</div><div class="muted" style="font-size:12px">${escapeHtml(mine.title)}</div></div>` : ""}
       ${m.phone ? `<div class="field"><label>Phone</label><div>${escapeHtml(formatPhone(m.phone))}</div></div>` : ""}
       ${m.email ? `<div class="field"><label>Email</label><div>${escapeHtml(m.email)}</div></div>` : ""}
       ${m.dealership_website ? `<div class="field"><label>Dealership Website</label><div><a href="${escapeAttr(withProtocol(m.dealership_website))}" target="_blank" rel="noopener">${escapeHtml(m.dealership_website.replace(/^https?:\/\//i, ""))} ${I.link}</a></div></div>` : ""}
@@ -810,15 +1068,21 @@ function wireQuickActions() {
       uiState.composerOpen = true;
       uiState.editingNoteId = null;
       uiState.composerMethod = btn.dataset.method;
-      uiState.focusComposer = true;
+      uiState.focusId = "c-note";
       render();
     })
   );
 }
 
 // ---------- activity tab ----------
-function renderActivityTab(interactions) {
+function renderActivityTab(meister, interactions, followUps, comments) {
   const filtered = uiState.methodFilter ? interactions.filter((i) => i.method === uiState.methodFilter) : interactions;
+  const pendingFus = followUps.filter((f) => !f.done_at);
+  const fusByNote = {};
+  for (const f of followUps) if (f.interaction_id) (fusByNote[f.interaction_id] ||= []).push(f);
+  const commentsByNote = {};
+  for (const c of comments) (commentsByNote[c.interaction_id] ||= []).push(c);
+
   return `
     <div id="tab-activity" class="tab-panel" style="${uiState.activeTab === "activity" ? "" : "display:none"}">
       <div class="toolbar">
@@ -829,10 +1093,23 @@ function renderActivityTab(interactions) {
             return `<button type="button" class="chip ${uiState.methodFilter === m ? "active" : ""}" data-method="${m}">${METHOD_ICON[m]} ${m} <span class="chip-n">${n}</span></button>`;
           }).join("")}
         </div>
-        <button type="button" id="toggle-composer-btn" class="btn btn-primary">${I.plus} Log Activity</button>
+        <div class="page-actions">
+          <button type="button" id="open-fu-btn" class="btn btn-ghost">${I.bell} Follow-up</button>
+          <button type="button" id="toggle-composer-btn" class="btn btn-primary">${I.plus} Log Activity</button>
+        </div>
       </div>
 
+      ${uiState.fuFormOpen && !uiState.editingFuId ? fuFormHtml(null, meister.name) : ""}
       ${uiState.composerOpen && !uiState.editingNoteId ? composerHtml(null) : ""}
+
+      ${
+        pendingFus.length
+          ? `<div class="fu-panel">
+              <div class="group-label" style="margin-top:0">Pending follow-ups</div>
+              <div class="fu-list">${pendingFus.map((f) => (uiState.editingFuId === f.id ? fuFormHtml(f, meister.name) : fuRowHtml(f, meister.name, false))).join("")}</div>
+            </div>`
+          : ""
+      }
 
       ${
         filtered.length
@@ -841,7 +1118,7 @@ function renderActivityTab(interactions) {
                 ([label, items]) => `
             <div class="group-label">${escapeHtml(label)}</div>
             <div class="notes-list">
-              ${items.map((i) => (uiState.editingNoteId === i.id ? composerHtml(i) : noteCardHtml(i))).join("")}
+              ${items.map((i) => (uiState.editingNoteId === i.id ? composerHtml(i) : noteCardHtml(i, fusByNote[i.id] || [], commentsByNote[i.id] || [], meister))).join("")}
             </div>`
               )
               .join("")
@@ -851,9 +1128,9 @@ function renderActivityTab(interactions) {
   `;
 }
 
-function noteCardHtml(i) {
+function noteCardHtml(i, fus, cmts, meister) {
   return `
-    <div class="note-card">
+    <div class="note-card" data-note-id="${i.id}">
       <div class="note-top">
         <span class="method-badge method-${slug(i.method)}">${METHOD_ICON[i.method] || ""} ${escapeHtml(i.method)}</span>
         <span class="muted">${escapeHtml(i.created_by_name || "someone")} &middot; ${fmtDateTime(i.occurred_at)}${i.edited_at ? ` &middot; <em>edited</em>` : ""}</span>
@@ -863,7 +1140,57 @@ function noteCardHtml(i) {
         </span>
       </div>
       <div class="note-text">${escapeHtml(i.note)}</div>
+      ${
+        fus.length
+          ? `<div class="note-fus">${fus
+              .map((f) => {
+                const st = f.done_at ? "done" : followUpState(f.due_at);
+                return `<span class="fu-chip fu-${st}" title="${escapeAttr(f.user_name || "")}">${f.done_at ? I.check : I.calendar} ${escapeHtml(f.title)} · ${f.done_at ? "done" : fmtDateTime(f.due_at)}</span>`;
+              })
+              .join("")}</div>`
+          : ""
+      }
+      <div class="comments">
+        ${cmts.map((c) => (uiState.editingCommentId === c.id ? commentFormHtml(i.id, c) : commentHtml(c))).join("")}
+        ${
+          uiState.replyingTo === i.id
+            ? commentFormHtml(i.id, null)
+            : `<button type="button" class="reply-btn" data-reply="${i.id}">${I.reply} ${cmts.length ? "Reply" : "Comment"}</button>`
+        }
+      </div>
     </div>`;
+}
+
+function commentHtml(c) {
+  const own = c.created_by === currentProfile.id;
+  return `
+    <div class="comment">
+      <span class="user-avatar">${initials(c.created_by_name)}</span>
+      <div class="comment-body">
+        <div class="comment-meta"><strong>${escapeHtml(c.created_by_name || "someone")}</strong> <span class="muted">${fmtDateTime(c.created_at)}${c.edited_at ? " · <em>edited</em>" : ""}</span>
+          <span class="note-actions">
+            ${own || isAdmin() ? `<button class="icon-btn edit-comment-btn" data-id="${c.id}" title="Edit">${I.edit}</button>` : ""}
+            ${isAdmin() ? `<button class="icon-btn danger delete-comment-btn" data-id="${c.id}" title="Delete">${I.trash}</button>` : ""}
+          </span>
+        </div>
+        <div class="comment-text">${escapeHtml(c.body)}</div>
+      </div>
+    </div>`;
+}
+
+function commentFormHtml(noteId, existing) {
+  const p = existing ? `cme-${existing.id}-` : `cm-${noteId}-`;
+  return `
+    <form class="comment-form" data-prefix="${p}" data-note-id="${noteId}" data-edit-id="${existing ? existing.id : ""}">
+      <span class="user-avatar">${initials(currentProfile.full_name)}</span>
+      <div class="comment-body">
+        <textarea id="${p}body" data-draft rows="2" required placeholder="Add a comment…">${escapeHtml(dv(`${p}body`, existing ? existing.body : ""))}</textarea>
+        <div class="composer-actions" style="margin-top:8px">
+          <button type="button" class="btn btn-sm cancel-comment-btn">Cancel</button>
+          <button type="submit" class="btn btn-primary btn-sm">${existing ? "Save" : "Post"}</button>
+        </div>
+      </div>
+    </form>`;
 }
 
 function composerHtml(existing) {
@@ -871,6 +1198,7 @@ function composerHtml(existing) {
   const method = dv(`${p}method`, existing ? existing.method : uiState.composerMethod);
   const when = dv(`${p}when`, toLocalInput(existing ? existing.occurred_at : new Date().toISOString()));
   const note = dv(`${p}note`, existing ? existing.note : "");
+  const withFu = !existing && uiState.composerWithFollowUp;
   return `
     <form class="composer" data-edit-id="${existing ? existing.id : ""}" data-prefix="${p}">
       <div class="composer-top">
@@ -879,6 +1207,19 @@ function composerHtml(existing) {
         <span class="muted composer-hint">${existing ? "Editing" : "When it happened"}</span>
       </div>
       <textarea id="${p}note" data-draft rows="3" required placeholder="What did you talk about? Any follow-up needed?">${escapeHtml(note)}</textarea>
+      ${
+        existing
+          ? ""
+          : `<label class="fu-toggle"><input type="checkbox" id="c-fu-on" ${withFu ? "checked" : ""} /> ${I.bell} Set a follow-up reminder</label>
+             ${
+               withFu
+                 ? `<div class="fu-form-grid" style="margin-top:8px">
+                      <input id="c-fu-title" data-draft placeholder="Follow-up title" value="${escapeAttr(dv("c-fu-title", ""))}" />
+                      <input id="c-fu-when" data-draft type="datetime-local" value="${escapeAttr(dv("c-fu-when", toLocalInput(defaultFollowUpTime())))}" />
+                    </div>`
+                 : ""
+             }`
+      }
       <div class="composer-actions">
         <button type="button" class="btn cancel-composer-btn">Cancel</button>
         <button type="submit" class="btn btn-primary">${existing ? "Save changes" : "Log it"}</button>
@@ -886,7 +1227,7 @@ function composerHtml(existing) {
     </form>`;
 }
 
-function wireActivityTab(meister) {
+function wireActivityTab(container, meister) {
   document.querySelectorAll("#method-chips .chip").forEach((chip) =>
     chip.addEventListener("click", () => {
       uiState.methodFilter = chip.dataset.method;
@@ -897,18 +1238,35 @@ function wireActivityTab(meister) {
   document.getElementById("toggle-composer-btn")?.addEventListener("click", () => {
     uiState.composerOpen = true;
     uiState.editingNoteId = null;
-    uiState.focusComposer = true;
+    uiState.focusId = "c-note";
+    render();
+  });
+  document.getElementById("open-fu-btn")?.addEventListener("click", () => {
+    uiState.fuFormOpen = true;
+    uiState.editingFuId = null;
+    uiState.focusId = "fu-title";
     render();
   });
 
-  document.querySelectorAll(".composer").forEach((form) => {
+  // follow-up toggle inside the composer
+  document.getElementById("c-fu-on")?.addEventListener("change", (e) => {
+    uiState.composerWithFollowUp = e.target.checked;
+    uiState.focusId = e.target.checked ? "c-fu-title" : "c-note";
+    render();
+  });
+
+  document.querySelectorAll(".composer:not(.fu-form)").forEach((form) => {
     const prefix = form.dataset.prefix;
     const editId = form.dataset.editId;
 
     form.querySelector(".cancel-composer-btn").addEventListener("click", () => {
       clearDrafts(prefix);
+      clearDrafts("c-fu-");
       if (editId) uiState.editingNoteId = null;
-      else uiState.composerOpen = false;
+      else {
+        uiState.composerOpen = false;
+        uiState.composerWithFollowUp = false;
+      }
       render();
     });
 
@@ -920,6 +1278,15 @@ function wireActivityTab(meister) {
         note: document.getElementById(`${prefix}note`).value.trim(),
       };
       if (!payload.note || !payload.occurred_at) return;
+
+      let fu = null;
+      if (!editId && uiState.composerWithFollowUp) {
+        const title = document.getElementById("c-fu-title")?.value.trim();
+        const due_at = fromLocalInput(document.getElementById("c-fu-when")?.value);
+        if (!title || !due_at) return toast("Give the follow-up a title and a time, or untick it.", "error");
+        fu = { title, due_at };
+      }
+
       const btn = form.querySelector("button[type=submit]");
       btn.disabled = true;
       try {
@@ -928,11 +1295,14 @@ function wireActivityTab(meister) {
           uiState.editingNoteId = null;
           toast("Note updated");
         } else {
-          await addInteraction(meister.id, payload, currentProfile.full_name, currentProfile.id);
+          const created = await addInteraction(meister.id, payload, currentProfile.full_name, currentProfile.id);
+          if (fu) await addFollowUp({ meister_id: meister.id, interaction_id: created.id, ...fu }, currentProfile.full_name, currentProfile.id);
           uiState.composerOpen = false;
-          toast(`${payload.method === "Other" ? "Note" : payload.method} logged`);
+          uiState.composerWithFollowUp = false;
+          toast(`${payload.method === "Other" ? "Note" : payload.method} logged${fu ? " + follow-up set" : ""}`);
         }
         clearDrafts(prefix);
+        clearDrafts("c-fu-");
         render();
       } catch (err) {
         toast("Could not save: " + err.message, "error");
@@ -948,10 +1318,9 @@ function wireActivityTab(meister) {
       render();
     })
   );
-
   document.querySelectorAll(".delete-note-btn").forEach((btn) =>
     btn.addEventListener("click", async () => {
-      if (!confirm("Delete this note? This cannot be undone.")) return;
+      if (!confirm("Delete this note and its comments? This cannot be undone.")) return;
       try {
         await deleteInteraction(btn.dataset.id);
         toast("Note deleted");
@@ -961,6 +1330,78 @@ function wireActivityTab(meister) {
       }
     })
   );
+
+  // comments
+  document.querySelectorAll(".reply-btn").forEach((b) =>
+    b.addEventListener("click", () => {
+      uiState.replyingTo = b.dataset.reply;
+      uiState.editingCommentId = null;
+      uiState.focusId = `cm-${b.dataset.reply}-body`;
+      render();
+    })
+  );
+  document.querySelectorAll(".edit-comment-btn").forEach((b) =>
+    b.addEventListener("click", () => {
+      uiState.editingCommentId = b.dataset.id;
+      uiState.replyingTo = null;
+      uiState.focusId = `cme-${b.dataset.id}-body`;
+      render();
+    })
+  );
+  document.querySelectorAll(".delete-comment-btn").forEach((b) =>
+    b.addEventListener("click", async () => {
+      if (!confirm("Delete this comment?")) return;
+      try {
+        await deleteComment(b.dataset.id);
+        toast("Comment deleted");
+        render();
+      } catch (err) {
+        toast("Could not delete: " + err.message, "error");
+      }
+    })
+  );
+  document.querySelectorAll(".comment-form").forEach((form) => {
+    const prefix = form.dataset.prefix;
+    const editId = form.dataset.editId;
+    const noteId = form.dataset.noteId;
+    form.querySelector(".cancel-comment-btn").addEventListener("click", () => {
+      clearDrafts(prefix);
+      if (editId) uiState.editingCommentId = null;
+      else uiState.replyingTo = null;
+      render();
+    });
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const body = document.getElementById(`${prefix}body`).value.trim();
+      if (!body) return;
+      const btn = form.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        if (editId) {
+          await updateComment(editId, body);
+          uiState.editingCommentId = null;
+          toast("Comment updated");
+        } else {
+          await addComment(noteId, body, currentProfile.full_name, currentProfile.id);
+          uiState.replyingTo = null;
+          toast("Comment posted");
+        }
+        clearDrafts(prefix);
+        render();
+      } catch (err) {
+        toast("Could not save: " + err.message, "error");
+        btn.disabled = false;
+      }
+    });
+  });
+
+  // follow-ups on this meister
+  wireFollowUpControls(container, {
+    meisterId: meister.id,
+    onEdit: (id) => { uiState.editingFuId = id; uiState.fuFormOpen = false; uiState.focusId = `fue-${id}-title`; render(); },
+    onCancel: (editId) => { if (editId) uiState.editingFuId = null; else uiState.fuFormOpen = false; render(); },
+    afterSave: (editId) => { if (editId) uiState.editingFuId = null; else uiState.fuFormOpen = false; },
+  });
 }
 
 // ---------- guests tab ----------
@@ -1026,8 +1467,8 @@ function wireGuestsTab(meister) {
   document.getElementById("add-guest-btn")?.addEventListener("click", () => {
     uiState.guestFormOpen = true;
     uiState.editingGuestId = null;
+    uiState.focusId = "g-name";
     render();
-    document.getElementById("g-name")?.focus();
   });
 
   document.querySelectorAll(".guest-form").forEach((form) => {
@@ -1133,7 +1574,7 @@ function escapeAttr(str) {
   return escapeHtml(str || "");
 }
 function slug(str) {
-  return String(str || "").toLowerCase().replace(/\s+/g, "-");
+  return String(str || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
 function initials(name) {
   return (name || "")
@@ -1191,7 +1632,8 @@ function fmtTime(iso) {
 }
 function fmtDateTime(iso) {
   const d = new Date(iso);
-  return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${fmtTime(iso)}`;
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: sameYear ? undefined : "numeric" })}, ${fmtTime(iso)}`;
 }
 function monthLabel(iso) {
   return new Date(iso).toLocaleDateString(undefined, { month: "long", year: "numeric" });
@@ -1205,19 +1647,26 @@ function dayLabel(iso) {
   if (diff === 1) return "Yesterday";
   return d.toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric", year: d.getFullYear() === today.getFullYear() ? undefined : "numeric" });
 }
-function followUpState(dateStr) {
-  if (!dateStr) return null;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const d = parseDateOnly(dateStr);
-  if (d < today) return "overdue";
-  if (d.getTime() === today.getTime()) return "today";
+// Works for both date-only strings (legacy) and full timestamps.
+function followUpState(v) {
+  if (!v) return null;
+  const now = new Date();
+  const d = parseDateOnly(v);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    if (d < today) return "overdue";
+    if (d.getTime() === today.getTime()) return "today";
+    return "upcoming";
+  }
+  if (d < now) return "overdue";
+  if (d.toDateString() === now.toDateString()) return "today";
   return "upcoming";
 }
-function followUpChip(dateStr) {
-  const s = followUpState(dateStr);
+function followUpChip(v) {
+  const s = followUpState(v);
   if (!s) return `<span class="muted">—</span>`;
-  const label = s === "overdue" ? "Overdue" : s === "today" ? "Today" : fmtDate(dateStr);
-  return `<span class="fu-chip fu-${s}">${I.calendar} ${label}</span>${s !== "upcoming" ? `<div class="muted cell-sub">${fmtDate(dateStr)}</div>` : ""}`;
+  const label = s === "overdue" ? "Overdue" : s === "today" ? `Today ${fmtTime(v)}` : fmtDateTime(v);
+  return `<span class="fu-chip fu-${s}">${I.calendar} ${label}</span>${s === "overdue" ? `<div class="muted cell-sub">${fmtDateTime(v)}</div>` : ""}`;
 }
 function relativeTime(iso) {
   if (!iso) return "—";

@@ -75,7 +75,8 @@ create table if not exists meisters (
   zip text,
   status text not null default 'New' check (status in ('New','Contacted','Engaged','Sold','Not Interested')),
   concierge text check (concierge is null or concierge in ('Freddie','Logan')),
-  next_follow_up date,
+  job_title text,
+  next_follow_up date, -- legacy; replaced by the follow_ups table
   profile_summary text,
   created_by uuid references auth.users(id),
   created_by_name text,
@@ -141,6 +142,40 @@ create table if not exists guests (
 create index if not exists guests_meister_idx on guests (meister_id);
 
 -- ============================================================
+-- FOLLOW-UPS  (personal reminders, optionally tied to an activity)
+-- ============================================================
+create table if not exists follow_ups (
+  id uuid primary key default gen_random_uuid(),
+  meister_id uuid not null references meisters(id) on delete cascade,
+  interaction_id uuid references interactions(id) on delete set null,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  user_name text,
+  title text not null,
+  due_at timestamptz not null,
+  done_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists follow_ups_user_due_idx on follow_ups (user_id, due_at);
+create index if not exists follow_ups_meister_idx on follow_ups (meister_id);
+create index if not exists follow_ups_interaction_idx on follow_ups (interaction_id);
+
+-- ============================================================
+-- COMMENTS  (replies on a logged activity)
+-- ============================================================
+create table if not exists interaction_comments (
+  id uuid primary key default gen_random_uuid(),
+  interaction_id uuid not null references interactions(id) on delete cascade,
+  body text not null,
+  created_by uuid references auth.users(id),
+  created_by_name text,
+  edited_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists interaction_comments_interaction_idx on interaction_comments (interaction_id);
+
+-- ============================================================
 -- ROW LEVEL SECURITY
 -- Any signed-in team member can read, add, and edit everything.
 -- Only admins (profiles.is_admin = true) can DELETE.
@@ -149,6 +184,8 @@ alter table profiles enable row level security;
 alter table meisters enable row level security;
 alter table interactions enable row level security;
 alter table guests enable row level security;
+alter table follow_ups enable row level security;
+alter table interaction_comments enable row level security;
 
 -- profiles: everyone signed in can read the team list; edits go through set_display_name()
 drop policy if exists "profiles_read_all" on profiles;
@@ -187,9 +224,37 @@ create policy "guests_insert" on guests for insert with check (auth.role() = 'au
 create policy "guests_update" on guests for update using (auth.role() = 'authenticated') with check (auth.role() = 'authenticated');
 create policy "guests_delete_admin" on guests for delete using (public.is_admin());
 
+-- follow-ups: everyone can see them; only the owner (or an admin) can change or remove theirs
+drop policy if exists "follow_ups_select" on follow_ups;
+drop policy if exists "follow_ups_insert" on follow_ups;
+drop policy if exists "follow_ups_update" on follow_ups;
+drop policy if exists "follow_ups_delete" on follow_ups;
+create policy "follow_ups_select" on follow_ups for select using (auth.role() = 'authenticated');
+create policy "follow_ups_insert" on follow_ups for insert with check (auth.role() = 'authenticated' and user_id = auth.uid());
+create policy "follow_ups_update" on follow_ups for update using (user_id = auth.uid() or public.is_admin()) with check (user_id = auth.uid() or public.is_admin());
+create policy "follow_ups_delete" on follow_ups for delete using (user_id = auth.uid() or public.is_admin());
+
+-- comments: everyone can read/add; only the author (or admin) edits; only admins delete
+drop policy if exists "comments_select" on interaction_comments;
+drop policy if exists "comments_insert" on interaction_comments;
+drop policy if exists "comments_update" on interaction_comments;
+drop policy if exists "comments_delete_admin" on interaction_comments;
+create policy "comments_select" on interaction_comments for select using (auth.role() = 'authenticated');
+create policy "comments_insert" on interaction_comments for insert with check (auth.role() = 'authenticated' and created_by = auth.uid());
+create policy "comments_update" on interaction_comments for update using (created_by = auth.uid() or public.is_admin()) with check (created_by = auth.uid() or public.is_admin());
+create policy "comments_delete_admin" on interaction_comments for delete using (public.is_admin());
+
 -- ============================================================
 -- REALTIME  (wrapped so re-running never errors with "already member")
 -- ============================================================
+do $$ begin
+  alter publication supabase_realtime add table follow_ups;
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  alter publication supabase_realtime add table interaction_comments;
+exception when duplicate_object then null; end $$;
+
 do $$ begin
   alter publication supabase_realtime add table meisters;
 exception when duplicate_object then null; end $$;
