@@ -50,9 +50,16 @@ async function init() {
 
   supabase.auth.onAuthStateChange(async (event, session) => {
     if (event === "SIGNED_IN") {
+      // Supabase re-fires SIGNED_IN on tab-focus / token refresh even when
+      // already logged in — only treat it as a real login (and navigate
+      // away) if we're actually sitting on the login screen. Otherwise this
+      // was wiping out in-progress work like a half-filled "New Meister" form.
+      const alreadySignedIn = !!currentProfile;
       currentProfile = await getCurrentProfile();
-      startRealtime();
-      navigate("#/dashboard");
+      if (!alreadySignedIn) {
+        startRealtime();
+        navigate("#/dashboard");
+      }
     } else if (event === "SIGNED_OUT") {
       currentProfile = null;
       if (unsubscribeRealtime) unsubscribeRealtime();
@@ -276,7 +283,7 @@ function drawMeisterRows(meisters, query, status) {
       <tr class="clickable-row" data-id="${m.id}">
         <td class="cell-name">${escapeHtml(m.name)}</td>
         <td>${escapeHtml(m.dealership || "—")}</td>
-        <td>${escapeHtml(m.phone || "—")}</td>
+        <td>${escapeHtml(formatPhone(m.phone) || "—")}</td>
         <td>${escapeHtml(m.email || "—")}</td>
         <td><span class="status-pill status-${slug(m.status)}">${escapeHtml(m.status)}</span></td>
         <td class="muted">${relativeTime(m.updated_at)}</td>
@@ -387,7 +394,7 @@ async function renderMeister(route) {
           </div>
           <div class="form-field">
             <label>Phone</label>
-            <input id="f-phone" value="${escapeAttr(meister?.phone)}" />
+            <input id="f-phone" type="tel" placeholder="(xxx) xxx-xxxx" value="${escapeAttr(formatPhone(meister?.phone))}" />
           </div>
           <div class="form-field">
             <label>Email</label>
@@ -439,6 +446,13 @@ async function renderMeister(route) {
 
   wireTabs();
 
+  const phoneInput = document.getElementById("f-phone");
+  phoneInput.addEventListener("input", () => {
+    const cursorAtEnd = phoneInput.selectionEnd === phoneInput.value.length;
+    phoneInput.value = formatPhone(phoneInput.value);
+    if (cursorAtEnd) phoneInput.setSelectionRange(phoneInput.value.length, phoneInput.value.length);
+  });
+
   document.getElementById("profile-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const fields = {
@@ -448,7 +462,7 @@ async function renderMeister(route) {
       city: document.getElementById("f-city").value.trim(),
       state: document.getElementById("f-state").value.trim(),
       zip: document.getElementById("f-zip").value.trim(),
-      phone: document.getElementById("f-phone").value.trim(),
+      phone: formatPhone(document.getElementById("f-phone").value),
       email: document.getElementById("f-email").value.trim(),
       status: document.getElementById("f-status").value,
       profile_summary: document.getElementById("f-summary").value.trim(),
@@ -500,7 +514,7 @@ function renderProfileSidebar(meister) {
       </div>
       <p class="muted" style="margin:-4px 0 16px">Logs the conversation here — doesn't place a call, send a text, or send an email.</p>
 
-      ${meister.phone ? `<div class="field"><label>Phone</label><div>${escapeHtml(meister.phone)}</div></div>` : ""}
+      ${meister.phone ? `<div class="field"><label>Phone</label><div>${escapeHtml(formatPhone(meister.phone))}</div></div>` : ""}
       ${meister.email ? `<div class="field"><label>Email</label><div>${escapeHtml(meister.email)}</div></div>` : ""}
       ${meister.dealership_website ? `<div class="field"><label>Dealership Website</label><div><a href="${escapeAttr(withProtocol(meister.dealership_website))}" target="_blank" rel="noopener">${escapeHtml(meister.dealership_website)}</a></div></div>` : ""}
       ${cityLine ? `<div class="field"><label>Location</label><div>${escapeHtml(cityLine)}</div></div>` : ""}
@@ -516,6 +530,14 @@ function initials(name) {
     .slice(0, 2)
     .map((w) => w[0]?.toUpperCase() || "")
     .join("");
+}
+
+function formatPhone(value) {
+  if (!value) return "";
+  const digits = String(value).replace(/\D/g, "").slice(0, 10);
+  if (digits.length < 4) return digits;
+  if (digits.length < 7) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
 }
 
 function withProtocol(url) {
